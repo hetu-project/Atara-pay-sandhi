@@ -6,7 +6,6 @@ import (
 
 	"github.com/advaita/atara-pay/internal/app"
 	"github.com/advaita/atara-pay/internal/auth"
-	"github.com/advaita/atara-pay/internal/domain/model"
 	"github.com/advaita/atara-pay/internal/httpx"
 	"github.com/advaita/atara-pay/internal/money"
 	"github.com/go-chi/chi/v5"
@@ -98,15 +97,12 @@ func (h *Handler) RevokeAllowance(w http.ResponseWriter, r *http.Request) {
 // ── 联系人 ──
 
 func (h *Handler) Contacts(w http.ResponseWriter, r *http.Request) {
-	cs, err := h.St.Contacts(r.Context(), h.actorID(r))
+	cs, err := h.Svc.ContactCards(r.Context(), h.actorID(r))
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	if cs == nil {
-		cs = []*model.Contact{}
-	}
-	ok(w, map[string]any{"contacts": cs})
+	ok(w, map[string]any{"contacts": cs, "relationships": app.Relationships})
 }
 
 // AddContact 收一个字段：名字或地址。没有 ATR ID 了。

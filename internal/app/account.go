@@ -13,6 +13,7 @@ import (
 	"github.com/advaita/atara-pay/internal/domain/model"
 	"github.com/advaita/atara-pay/internal/domain/order"
 	"github.com/advaita/atara-pay/internal/httpx"
+	"github.com/advaita/atara-pay/internal/money"
 	"github.com/advaita/atara-pay/internal/store"
 	"github.com/shopspring/decimal"
 )
@@ -307,3 +308,51 @@ func (s *Service) PostChat(ctx context.Context, ownerID, peerID, body string) (*
 	}
 	return m, nil
 }
+
+// ContactCard 是联系人卡片要的全部字段：关系、地址、往来历史。
+// 前端的对手方槽、@ 面板、联系人页读的都是它。
+type ContactCard struct {
+	*model.Contact
+	Deals    int    `json:"deals"`
+	FillRate string `json:"fill_rate"`
+	Net      string `json:"net"` // 与我的往来净额，正数=对方欠我
+	Since    string `json:"since"`
+}
+
+func (s *Service) ContactCards(ctx context.Context, ownerID string) ([]ContactCard, error) {
+	cs, err := s.St.Contacts(ctx, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ContactCard, 0, len(cs))
+	for _, c := range cs {
+		card := ContactCard{Contact: c, Net: "0"}
+		if m, err := s.St.Merchant(ctx, c.ContactID); err == nil {
+			card.Deals, card.FillRate = m.Deals, m.FillRate.String()
+		}
+		// 往来净额：跟这个人之间已完成的单，我付出去的记负、收进来的记正
+		orders, err := s.St.Orders(ctx, store.OrderFilter{Owner: ownerID, Peer: c.ContactID,
+			Terminal: string(order.TermCompleted)})
+		if err == nil {
+			net := decimal.Zero
+			for _, o := range orders {
+				v := money.New(o.Amount, o.Asset).USD()
+				if o.OwnerID == ownerID {
+					net = net.Sub(v)
+				} else {
+					net = net.Add(v)
+				}
+				if card.Since == "" {
+					card.Since = o.CreatedAt.Format("Jan 2006")
+				}
+			}
+			card.Net = net.Round(0).String()
+		}
+		out = append(out, card)
+	}
+	return out, nil
+}
+
+// Relationships 是关系标签的可选值。它决定默认条件模板：
+// 给供应商付款默认要凭证 + 我确认；给客户或自己的 agent 默认立即。
+var Relationships = []string{"Supplier", "Client", "Colleague", "Friend", "My agent"}
