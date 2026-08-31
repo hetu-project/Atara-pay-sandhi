@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"errors"
 	"fmt"
 	"time"
 
@@ -93,3 +94,6 @@ func emptyToNull(s string) any {
 	}
 	return s
 }
+
+// ErrOversold：并发吃同一挂单时，可成交量的守门人。
+var ErrOversold = errors.New("not enough volume left on this listing")

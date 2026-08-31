@@ -1,20 +1,26 @@
--- atara-pay 一期 schema。
--- SQLite 方言：uuid/decimal/timestamp 一律 TEXT，enum 用 CHECK 约束。
--- 金额存十进制字符串，比较与运算全部在 Go 侧用 decimal 完成——
--- 不让 SQLite 的浮点参与任何资金判断。
+-- atara-pay schema。非托管模型。
+--
+-- 这里**没有** wallets 表，这是刻意的：余额与托管仓位属于链，
+-- 由 chain_* 表持有、只能隔着 chain.Chain 接口读。
+-- 平台自己记一笔余额，就等于又变回托管了。
+--
+-- SQLite 方言：uuid/decimal/timestamp 一律 TEXT，enum 用 CHECK。
+-- 金额存十进制字符串，运算全部在 Go 侧用 decimal 完成。
 
 pragma foreign_keys = on;
 
+-- 身份就是地址。邮箱只是通知渠道，不是登录名。
 create table if not exists users (
-  id           text primary key,
-  handle       text unique not null,
-  email        text unique not null,
-  display_name text not null,
-  kind         text not null default 'person' check (kind in ('person','firm','agent')),
-  created_at   text not null
+  id            text primary key,
+  address       text unique not null,
+  display_name  text not null,
+  email         text not null default '',
+  kind          text not null default 'person' check (kind in ('person','firm','agent')),
+  wallet_kind   text not null default 'atara' check (wallet_kind in ('atara','ext')),
+  login_method  text not null default 'passkey',  -- passkey | wallet | google | email
+  created_at    text not null
 );
 
--- 挂单卡上必须出现的字段：缺件也公开，让买家自己给缺口定价
 create table if not exists merchant_profiles (
   user_id             text primary key references users(id),
   peer_code           text unique not null,
@@ -26,30 +32,34 @@ create table if not exists merchant_profiles (
   docs                text not null default '{}'
 );
 
--- 授权卡：人自己也是一张卡，agent 各是一张
-create table if not exists authorization_cards (
-  id           text primary key,
-  owner_id     text not null references users(id),
-  name         text not null,
-  kind         text not null check (kind in ('person','agent')),
-  cycle        text not null check (cycle in ('weekly','monthly')),
-  quota        text,
-  used         text not null default '0',
-  per_deal_cap text,
-  allowlist    text not null default '',
-  template     text not null default '',
-  enabled      integer not null default 1,
-  note         text not null default ''
+-- 联系人：一个字段收名字或地址，不再有 ATR ID。
+create table if not exists contacts (
+  owner_id    text not null references users(id),
+  contact_id  text not null references users(id),
+  label       text not null default '',   -- Supplier / Client / Colleague / Friend / My agent
+  nickname    text not null default '',
+  created_at  text not null,
+  primary key (owner_id, contact_id)
 );
 
--- 钱包只持有数字资产。法币不入账：法币腿点对点走银行，平台只核验回执。
-create table if not exists wallets (
-  id         text primary key,
-  user_id    text not null references users(id),
-  asset_code text not null,
-  available  text not null default '0',
-  escrowed   text not null default '0',
-  unique (user_id, asset_code)
+-- 额度。不是"卡"，是 allowance——签进账户合约，或对支出合约 approve。
+create table if not exists allowances (
+  id           text primary key,
+  owner_id     text not null references users(id),
+  spender      text not null,
+  kind         text not null check (kind in ('person','agent')),
+  asset        text not null default 'USDT',
+  per_payment  text not null,
+  window_cap   text not null,
+  used         text not null default '0',
+  cycle        text not null check (cycle in ('weekly','monthly')),
+  expires_at   text,                       -- null = 不过期
+  recipients   text not null default 'Any',
+  template     text not null default '',
+  wallet_kind  text not null default 'atara',
+  chain_tx     text not null default '',
+  status       text not null default 'live' check (status in ('live','revoked')),
+  note         text not null default ''
 );
 
 create table if not exists offers (
@@ -64,6 +74,7 @@ create table if not exists offers (
   qty           text not null,
   remaining_qty text not null,
   min_lot       text not null,
+  lock_tx       text not null default '',   -- 挂出即锁币的链上凭证
   status        text not null default 'active' check (status in ('active','filled','delisted')),
   created_at    text not null,
   updated_at    text not null
@@ -80,15 +91,20 @@ create table if not exists orders (
   asset_code      text not null,
   amount          text not null,
   note            text not null default '',
-  card_id         text references authorization_cards(id),
+  allowance_id    text references allowances(id),
   state           text not null,
   terminal        text check (terminal in ('completed','cancelled','expired','disputed')),
   state_deadline  text,
+  funding_via     text not null default '',  -- wallet | external，谁出币谁选
+  escrow_tx       text not null default '',
+  escrow_addr     text not null default '',
+  escrow_network  text not null default '',
   created_at      text not null,
   updated_at      text not null
 );
 create index if not exists idx_orders_deadline on orders(state_deadline) where terminal is null;
 create index if not exists idx_orders_owner on orders(owner_id, created_at desc);
+create index if not exists idx_orders_peer on orders(counterparty_id, created_at desc);
 
 create table if not exists order_conditional (
   order_id            text primary key references orders(id),
@@ -99,7 +115,6 @@ create table if not exists order_conditional (
   dispute_window_secs integer not null default 0
 );
 
--- 最多 3 个原子的 AND 组合；空集 = 立即释放
 create table if not exists order_conditions (
   order_id  text not null references orders(id),
   seq       integer not null check (seq between 1 and 3),
@@ -111,14 +126,13 @@ create table if not exists order_conditions (
 create table if not exists order_otc (
   order_id    text primary key references orders(id),
   offer_id    text not null references offers(id),
-  side        text not null,
+  side        text not null,              -- taker 视角：buy | sell
   unit_price  text not null,
   fiat_code   text not null,
   fiat_amount text not null,
   network     text not null
 );
 
--- 状态变化留痕：争议时这条线程就是证据链的一部分
 create table if not exists order_events (
   id         integer primary key autoincrement,
   order_id   text not null references orders(id),
@@ -132,16 +146,32 @@ create table if not exists order_events (
   unique (order_id, seq)
 );
 
-create table if not exists ledger_entries (
-  id              integer primary key autoincrement,
-  wallet_id       text not null references wallets(id),
-  order_id        text,
-  offer_id        text,
-  kind            text not null,
-  delta_available text not null,
-  delta_escrowed  text not null,
-  memo            text not null default '',
-  created_at      text not null
+-- 一个对手方一条线程：聊天、订单卡、系统播报、评估结论共用一条流。
+create table if not exists messages (
+  id         text primary key,
+  owner_id   text not null references users(id),
+  peer_id    text not null references users(id),
+  author     text not null,               -- me | peer | system
+  kind       text not null,               -- chat | system | order | assessment
+  body       text not null default '',
+  order_id   text,
+  payload    text not null default '{}',
+  created_at text not null
+);
+create index if not exists idx_messages_thread on messages(owner_id, peer_id, created_at);
+
+-- 链上动作的观察日志。不是账本——余额不在这里，这里只记"我们看到链上发生了什么"。
+create table if not exists chain_events (
+  id         integer primary key autoincrement,
+  order_id   text,
+  offer_id   text,
+  actor_id   text,
+  kind       text not null,               -- deposit | release | refund | listing_lock | listing_unlock | allowance
+  asset      text not null default '',
+  amount     text not null default '0',
+  tx_hash    text not null default '',
+  memo       text not null default '',
+  created_at text not null
 );
 
 -- 法币腿只有凭证，没有余额

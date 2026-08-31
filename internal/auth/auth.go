@@ -56,9 +56,23 @@ func Actor(ctx context.Context) *model.User {
 
 const confirmTTL = 120 * time.Second
 
+// Grade 是确认的分级。前端把这件事说得很清楚：
+// Passkey 签名动钱，普通按钮只表示"我承诺接这单"。
+// 后端不能把两者当成一回事——否则要么签名成了摆设，
+// 要么接单也要摸指纹。
+type Grade string
+
+const (
+	// GradeSignature：动钱。Passkey 签的是那笔链上转账本身。
+	GradeSignature Grade = "signature"
+	// GradeCommit：只承诺，不动钱。接单、"我已经打款了"属于这一档。
+	GradeCommit Grade = "commit"
+)
+
 type token struct {
 	userID string
 	digest string
+	grade  Grade
 	expiry time.Time
 }
 
@@ -73,22 +87,33 @@ func NewConfirmations() *Confirmations { return &Confirmations{m: map[string]tok
 
 // Issue 签发一枚绑定到 (用户, 操作摘要) 的令牌。
 // digest 是「这次要确认的到底是哪笔」——换了金额或对手方，旧令牌就不认了。
-func (c *Confirmations) Issue(userID, digest string) (string, time.Time) {
+func (c *Confirmations) Issue(userID, digest string, g Grade) (string, time.Time) {
+	if g == "" {
+		g = GradeSignature
+	}
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	t := hex.EncodeToString(b)
 	exp := time.Now().Add(confirmTTL)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.m[t] = token{userID: userID, digest: digest, expiry: exp}
+	c.m[t] = token{userID: userID, digest: digest, grade: g, expiry: exp}
 	return t, exp
 }
 
 // Consume 校验并作废令牌。一次性——重放一笔已确认的支付不该再通过。
-func (c *Confirmations) Consume(raw, userID, digest string) error {
+// Consume 校验并作废令牌。need 是这次操作要求的最低档：
+// 要求签名档时，一张只承诺过的令牌不能放行。
+func (c *Confirmations) Consume(raw, userID, digest string, need Grade) error {
+	if need == "" {
+		need = GradeSignature
+	}
 	if raw == "" {
-		return httpx.Fail(http.StatusUnauthorized, "CONFIRMATION_REQUIRED", "",
-			"this moves money — confirm with your passkey first")
+		msg := "this moves money — sign it with your passkey first"
+		if need == GradeCommit {
+			msg = "confirm the order first"
+		}
+		return httpx.Fail(http.StatusUnauthorized, "CONFIRMATION_REQUIRED", "", msg)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -106,6 +131,11 @@ func (c *Confirmations) Consume(raw, userID, digest string) error {
 	if t.digest != "" && digest != "" && t.digest != digest {
 		return httpx.Fail(http.StatusUnauthorized, "CONFIRMATION_INVALID", "",
 			"the payment changed after you confirmed it — confirm again")
+	}
+	// 承诺档不能冒充签名档。反过来可以：签名比承诺更强。
+	if need == GradeSignature && t.grade != GradeSignature {
+		return httpx.Fail(http.StatusUnauthorized, "SIGNATURE_REQUIRED", "",
+			"this moves funds — it needs a passkey signature, not just a confirmation")
 	}
 	return nil
 }

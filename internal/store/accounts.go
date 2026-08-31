@@ -4,55 +4,97 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
+	"time"
 
 	"github.com/advaita/atara-pay/internal/domain/model"
 	"github.com/shopspring/decimal"
 )
 
-func (s *Store) UserByHandle(ctx context.Context, handle string) (*model.User, error) {
-	return s.scanUser(s.db.QueryRowContext(ctx,
-		`select id,handle,email,display_name,kind,created_at from users where handle=?`, handle))
-}
+const userCols = `id,address,display_name,email,kind,wallet_kind,login_method,created_at`
 
 func (s *Store) User(ctx context.Context, id string) (*model.User, error) {
-	return s.scanUser(s.db.QueryRowContext(ctx,
-		`select id,handle,email,display_name,kind,created_at from users where id=?`, id))
+	return scanUser(s.db.QueryRowContext(ctx, `select `+userCols+` from users where id=?`, id).Scan)
 }
 
-func (s *Store) scanUser(row *sql.Row) (*model.User, error) {
+// UserByAddress 是登录的入口：地址就是账户。
+func (s *Store) UserByAddress(ctx context.Context, addr string) (*model.User, error) {
+	return scanUser(s.db.QueryRowContext(ctx, `select `+userCols+` from users where address=?`, addr).Scan)
+}
+
+// UserByHandle 兼容 X-Atara-User：既认地址，也认展示名（demo 里方便切身份）。
+func (s *Store) UserByHandle(ctx context.Context, h string) (*model.User, error) {
+	if u, err := s.UserByAddress(ctx, h); err == nil {
+		return u, nil
+	}
+	return scanUser(s.db.QueryRowContext(ctx,
+		`select `+userCols+` from users where lower(display_name)=lower(?) limit 1`, h).Scan)
+}
+
+func scanUser(scan func(...any) error) (*model.User, error) {
 	var u model.User
 	var created string
-	if err := row.Scan(&u.ID, &u.Handle, &u.Email, &u.DisplayName, &u.Kind, &created); err != nil {
+	if err := scan(&u.ID, &u.Address, &u.DisplayName, &u.Email, &u.Kind,
+		&u.WalletKind, &u.LoginMethod, &created); err != nil {
 		return nil, err
 	}
 	u.CreatedAt = parseTS(created)
 	return &u, nil
 }
 
-// Counterparties 是对手方名册：@ 面板与条件支付的对手方槽用它。
-func (s *Store) Counterparties(ctx context.Context, selfID string) ([]*model.User, error) {
+func (s *Store) InsertUser(tx *sql.Tx, u *model.User) error {
+	_, err := tx.Exec(`insert into users(`+userCols+`) values(?,?,?,?,?,?,?,?)`,
+		u.ID, u.Address, u.DisplayName, u.Email, u.Kind, u.WalletKind, u.LoginMethod, ts(u.CreatedAt))
+	return err
+}
+
+func (s *Store) SetWalletKind(ctx context.Context, userID, kind string) error {
+	_, err := s.db.ExecContext(ctx, `update users set wallet_kind=? where id=?`, kind, userID)
+	return err
+}
+
+// ── 联系人 ──
+
+func (s *Store) Contacts(ctx context.Context, ownerID string) ([]*model.Contact, error) {
 	rows, err := s.db.QueryContext(ctx,
-		// 排除挂过单的人：他们是大厅里的对手方，不是你的联系人。
-		// 不能按「有没有 merchant_profile」筛——联系人也要有 profile 才能回写履约。
-		`select id,handle,email,display_name,kind,created_at from users
-		  where id<>? and id not in (select distinct maker_id from offers)
-		  order by display_name`, selfID)
+		`select u.id,u.address,u.display_name,u.kind,c.label,c.nickname
+		   from contacts c join users u on u.id=c.contact_id
+		  where c.owner_id=? order by u.display_name`, ownerID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*model.User
+	var out []*model.Contact
 	for rows.Next() {
-		var u model.User
-		var created string
-		if err := rows.Scan(&u.ID, &u.Handle, &u.Email, &u.DisplayName, &u.Kind, &created); err != nil {
+		var c model.Contact
+		if err := rows.Scan(&c.ContactID, &c.Address, &c.Name, &c.Kind, &c.Label, &c.Nickname); err != nil {
 			return nil, err
 		}
-		u.CreatedAt = parseTS(created)
-		out = append(out, &u)
+		out = append(out, &c)
 	}
 	return out, rows.Err()
 }
+
+// ResolveContact 收一个字段：名字或地址。
+// 地址是精确匹配，名字是精确匹配——都不做模糊搜索，那是开放撞库面。
+func (s *Store) ResolveContact(ctx context.Context, q string) (*model.User, error) {
+	q = strings.TrimSpace(q)
+	if u, err := s.UserByAddress(ctx, q); err == nil {
+		return u, nil
+	}
+	return scanUser(s.db.QueryRowContext(ctx,
+		`select `+userCols+` from users where lower(display_name)=lower(?) limit 1`, q).Scan)
+}
+
+func (s *Store) AddContact(ctx context.Context, ownerID, contactID, label, nickname string) error {
+	_, err := s.db.ExecContext(ctx,
+		`insert into contacts(owner_id,contact_id,label,nickname,created_at) values(?,?,?,?,?)
+		 on conflict(owner_id,contact_id) do update set label=excluded.label, nickname=excluded.nickname`,
+		ownerID, contactID, label, nickname, ts(Now()))
+	return err
+}
+
+// ── 商户画像 ──
 
 func (s *Store) Merchant(ctx context.Context, userID string) (*model.Merchant, error) {
 	var m model.Merchant
@@ -81,67 +123,80 @@ func (s *Store) BumpMerchant(tx *sql.Tx, userID string, completed bool) error {
 	return err
 }
 
-func (s *Store) Cards(ctx context.Context, ownerID string) ([]*model.Card, error) {
+// ── 额度 ──
+
+const allowCols = `id,owner_id,spender,kind,asset,per_payment,window_cap,used,cycle,
+	expires_at,recipients,template,wallet_kind,chain_tx,status,note`
+
+func (s *Store) Allowances(ctx context.Context, ownerID string) ([]*model.Allowance, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`select id,owner_id,name,kind,cycle,quota,used,per_deal_cap,allowlist,template,enabled,note
-		   from authorization_cards where owner_id=? order by kind desc, name`, ownerID)
+		`select `+allowCols+` from allowances where owner_id=? order by kind desc, spender`, ownerID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*model.Card
+	var out []*model.Allowance
 	for rows.Next() {
-		c, err := scanCard(rows.Scan)
+		a, err := scanAllowance(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, c)
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }
 
-func (s *Store) Card(ctx context.Context, id string) (*model.Card, error) {
-	row := s.db.QueryRowContext(ctx,
-		`select id,owner_id,name,kind,cycle,quota,used,per_deal_cap,allowlist,template,enabled,note
-		   from authorization_cards where id=?`, id)
-	return scanCard(row.Scan)
+func (s *Store) Allowance(ctx context.Context, id string) (*model.Allowance, error) {
+	return scanAllowance(s.db.QueryRowContext(ctx, `select `+allowCols+` from allowances where id=?`, id).Scan)
 }
 
-func scanCard(scan func(...any) error) (*model.Card, error) {
-	var c model.Card
-	var quota, cap_ sql.NullString
-	var used string
-	var enabled int
-	if err := scan(&c.ID, &c.OwnerID, &c.Name, &c.Kind, &c.Cycle, &quota, &used, &cap_,
-		&c.Allowlist, &c.Template, &enabled, &c.Note); err != nil {
+func scanAllowance(scan func(...any) error) (*model.Allowance, error) {
+	var a model.Allowance
+	var per, cap_, used string
+	var exp sql.NullString
+	if err := scan(&a.ID, &a.OwnerID, &a.Spender, &a.Kind, &a.Asset, &per, &cap_, &used, &a.Cycle,
+		&exp, &a.Recipients, &a.Template, &a.WalletKind, &a.ChainTx, &a.Status, &a.Note); err != nil {
 		return nil, err
 	}
-	c.Used = dec(used)
-	c.Enabled = enabled == 1
-	if quota.Valid {
-		v := dec(quota.String)
-		c.Quota = &v
+	a.PerPayment, a.WindowCap, a.Used = dec(per), dec(cap_), dec(used)
+	if exp.Valid && exp.String != "" {
+		t := parseTS(exp.String)
+		a.ExpiresAt = &t
 	}
-	if cap_.Valid {
-		v := dec(cap_.String)
-		c.PerDealCap = &v
-	}
-	return &c, nil
+	return &a, nil
 }
 
-// SpendCard 占用授权卡的周期额度；amount 为负即释放。
-func (s *Store) SpendCard(tx *sql.Tx, cardID string, usd decimal.Decimal) error {
-	if cardID == "" {
+func (s *Store) SaveAllowance(ctx context.Context, a *model.Allowance) error {
+	var exp any
+	if a.ExpiresAt != nil {
+		exp = ts(*a.ExpiresAt)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`insert into allowances(`+allowCols+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 on conflict(id) do update set spender=excluded.spender, per_payment=excluded.per_payment,
+		   window_cap=excluded.window_cap, cycle=excluded.cycle, expires_at=excluded.expires_at,
+		   recipients=excluded.recipients, wallet_kind=excluded.wallet_kind,
+		   chain_tx=excluded.chain_tx, status=excluded.status`,
+		a.ID, a.OwnerID, a.Spender, a.Kind, a.Asset, decStr(a.PerPayment), decStr(a.WindowCap),
+		decStr(a.Used), a.Cycle, exp, a.Recipients, a.Template, a.WalletKind, a.ChainTx, a.Status, a.Note)
+	return err
+}
+
+// SpendAllowance 占用窗口额度；amount 为负即释放。
+func (s *Store) SpendAllowance(tx *sql.Tx, id string, usd decimal.Decimal) error {
+	if id == "" {
 		return nil
 	}
 	var used string
-	if err := tx.QueryRow(`select used from authorization_cards where id=?`, cardID).Scan(&used); err != nil {
+	if err := tx.QueryRow(`select used from allowances where id=?`, id).Scan(&used); err != nil {
 		return err
 	}
 	next := dec(used).Add(usd)
 	if next.IsNegative() {
 		next = decimal.Zero
 	}
-	_, err := tx.Exec(`update authorization_cards set used=? where id=?`, decStr(next), cardID)
+	_, err := tx.Exec(`update allowances set used=? where id=?`, decStr(next), id)
 	return err
 }
+
+var _ = time.Now

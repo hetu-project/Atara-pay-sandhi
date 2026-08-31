@@ -15,11 +15,21 @@ type edge struct {
 
 // 条件支付托管的转移表。
 //
-//	                    ┌── immediate ─────────────┐
-//	创建 → locked ───────┤                          ├→ releasing → released ✅
-//	                    └→ awaiting_counterparty → awaiting_me ─┘
-//	                                                    └→ disputed ⚠️ 资金保持锁定
+// 非托管：创建时钱一分没动，合约在 fund 站等这一方入金；
+// 确认数走满才算真的锁住。
+//
+//	                                     ┌── immediate ─────────────┐
+//	创建 → fund ──入金确认──→ locked ──────┤                          ├→ releasing → released ✅
+//	                                     └→ awaiting_counterparty → awaiting_me ─┘
+//	                                                                     └→ disputed ⚠️ 资金保持锁定
 var conditionalEdges = []edge{
+	// 入金：Passkey 签名转入，或往合约地址打款后被扫到。
+	// 两条路殊途同归——确认数走满，合约拿到钱，才进 locked。
+	{ConditionalTransfer, Fund, EvFunded, both, Locked, TermNone},
+	// 还没入金就撤，链上什么都没发生
+	{ConditionalTransfer, Fund, EvCancel, owner, Cancelled, TermCancelled},
+	{ConditionalTransfer, Fund, EvTick, sys, Expired, TermExpired},
+
 	{ConditionalTransfer, Locked, EvTick, sys, AwaitingCounterparty, TermNone},
 	{ConditionalTransfer, Locked, EvTick, sys, Releasing, TermNone}, // immediate 分支
 
@@ -48,11 +58,22 @@ var conditionalEdges = []edge{
 //	match → s1 → s3 → s4 → s5 ✅
 //	  │           │
 //	  └ cancelled └ 超时 → expired ⚠️ 负向回写
+//
+// OTC 的 s1 按方向分叉，这是非托管模型下最重要的一处不对称：
+//
+//	taker 买币：币在对方挂单时就锁进合约了 → s1 只是查锁仓并绑单，瞬时
+//	taker 卖币：币要从 taker 自己的钱包出去 → s1 是真上链，走确认数
 var otcEdges = []edge{
-	{OTCTake, Match, EvAccept, owner, S1, TermNone}, // 承诺点：Passkey + 授权卡在这里校验
-	{OTCTake, S1, EvFund, both, S3, TermNone},       // maker 注资托管
-	{OTCTake, S3, EvReceipt, owner, S4, TermNone},   // 回传法币回执
-	{OTCTake, S4, EvTick, sys, S5, TermCompleted},   // 平台核验通过并放款
+	{OTCTake, Match, EvAccept, owner, S1, TermNone}, // 承诺点
+
+	// 买方向：验证对方挂单时锁的仓，绑到这笔订单上。没有新的资金动作。
+	{OTCTake, S1, EvBind, sys, S3, TermNone},
+	// 卖方向：taker 入金的确认数走满。
+	{OTCTake, S1, EvFunded, both, S3, TermNone},
+	{OTCTake, S1, EvCancel, owner, Cancelled, TermCancelled}, // 还没入金就反悔
+
+	{OTCTake, S3, EvReceipt, both, S4, TermNone}, // 谁付法币谁传回执
+	{OTCTake, S4, EvTick, sys, S5, TermCompleted},
 
 	{OTCTake, Match, EvCancel, owner, Cancelled, TermCancelled},
 	{OTCTake, S3, EvCancel, owner, Cancelled, TermCancelled},
@@ -60,7 +81,6 @@ var otcEdges = []edge{
 	// match 超时只是没成交，不是违约——所以是 cancelled 不是 expired。
 	// 两者都记 expired 会让履约率无故变差。
 	{OTCTake, Match, EvTick, sys, Cancelled, TermCancelled},
-	{OTCTake, S1, EvTick, sys, S3, TermNone}, // 调度器代跑种子商家的注资
 	{OTCTake, S3, EvTick, sys, Expired, TermExpired},
 }
 

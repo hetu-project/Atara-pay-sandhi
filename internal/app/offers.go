@@ -5,13 +5,14 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/advaita/atara-pay/internal/agent"
+	"github.com/advaita/atara-pay/internal/auth"
 	"github.com/advaita/atara-pay/internal/domain/model"
 	"github.com/advaita/atara-pay/internal/domain/order"
 	"github.com/advaita/atara-pay/internal/httpx"
-	"github.com/advaita/atara-pay/internal/ledger"
 	"github.com/advaita/atara-pay/internal/money"
 	"github.com/advaita/atara-pay/internal/store"
 	"github.com/shopspring/decimal"
@@ -69,14 +70,24 @@ func (s *Service) CreateOffer(ctx context.Context, makerID, confirmToken string,
 		req.Networks = []string{req.Network}
 	}
 
-	// 卖单锁的是要交割的币；买单不锁币（法币腿走银行，平台不代收法币）。
+	maker, err := s.St.User(ctx, makerID)
+	if err != nil {
+		return nil, httpx.NotFound("user")
+	}
+	// 卖单锁的是要交割的币——挂出即锁币，锁进合约，不是锁在平台。
+	// 买单不锁币：法币腿走银行，平台不代收法币，所以只是一句承诺。
+	lockTx := ""
 	if req.Side == "sell" {
-		if err := s.requireBalance(ctx, makerID, req.Asset, qty); err != nil {
+		if err := s.Confirm.Consume(confirmToken, makerID,
+			Digest("offer", req.Asset, qty.String()), auth.GradeSignature); err != nil {
 			return nil, err
 		}
-		if err := s.Confirm.Consume(confirmToken, makerID, Digest("offer", req.Asset, qty.String())); err != nil {
+		if err := s.requireOnChain(ctx, maker.Address, req.Asset, qty); err != nil {
 			return nil, err
 		}
+	} else if err := s.Confirm.Consume(confirmToken, makerID,
+		Digest("offer", req.Asset, qty.String()), auth.GradeCommit); err != nil {
+		return nil, err
 	}
 
 	o := &model.Offer{
@@ -85,14 +96,24 @@ func (s *Service) CreateOffer(ctx context.Context, makerID, confirmToken string,
 		UnitPrice: price, Qty: qty, RemainingQty: qty, MinLot: minLot,
 		Status: "active", CreatedAt: time.Now().UTC(),
 	}
-	err := s.St.Tx(ctx, func(tx *sql.Tx) error {
+	if req.Side == "sell" {
+		// 先上链再入库：链动作没有回滚，必须先成功。
+		if lockTx, err = s.Ch.LockListing(ctx, o.ID, maker.Address, o.Asset, qty); err != nil {
+			return nil, chainErr(err)
+		}
+		o.LockTx = lockTx
+	}
+	err = s.St.Tx(ctx, func(tx *sql.Tx) error {
 		if err := s.St.InsertOffer(tx, o); err != nil {
 			return err
 		}
-		if req.Side == "sell" {
-			return ledger.OfferLock(tx, makerID, o.Asset, qty, o.ID)
+		if lockTx == "" {
+			return nil
 		}
-		return nil
+		return store.LogChain(tx, makerID, store.ChainEvent{
+			Kind: "listing_lock", Asset: o.Asset, Amount: qty, TxHash: lockTx,
+			OfferID: o.ID, Memo: "posted and locked",
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -112,22 +133,32 @@ func (s *Service) Delist(ctx context.Context, makerID, offerID string) error {
 	if o.Status == "delisted" {
 		return nil
 	}
+	unlockTx := ""
+	if o.Side == "sell" && o.RemainingQty.IsPositive() {
+		// 下架即解锁：合约把剩下的币还回钱包。
+		if unlockTx, err = s.Ch.UnlockListing(ctx, o.ID); err != nil {
+			return chainErr(err)
+		}
+	}
 	return s.St.Tx(ctx, func(tx *sql.Tx) error {
 		if err := store.SetOfferStatus(tx, o.ID, "delisted"); err != nil {
 			return err
 		}
-		if o.Side == "sell" && o.RemainingQty.IsPositive() {
-			return ledger.OfferUnlock(tx, makerID, o.Asset, o.RemainingQty, o.ID)
+		if unlockTx == "" {
+			return nil
 		}
-		return nil
+		return store.LogChain(tx, makerID, store.ChainEvent{
+			Kind: "listing_unlock", Asset: o.Asset, Amount: o.RemainingQty,
+			TxHash: unlockTx, OfferID: o.ID, Memo: "delisted",
+		})
 	})
 }
 
 type TakeReq struct {
-	Amount     string `json:"amount"`
-	AmountKind string `json:"amount_kind"` // coin | fiat
-	Network    string `json:"network"`
-	CardID     string `json:"card_id"`
+	Amount      string `json:"amount"`
+	AmountKind  string `json:"amount_kind"` // coin | fiat
+	Network     string `json:"network"`
+	AllowanceID string `json:"card_id"`
 }
 
 // Take 吃单：建一条 otc_take 工单，软预留可成交量，**不动钱**。
@@ -170,7 +201,7 @@ func (s *Service) Take(ctx context.Context, takerID, offerID string, req TakeReq
 	ord := &order.Order{
 		ID: store.NewID(), Ref: Ref(), Kind: order.OTCTake,
 		OwnerID: takerID, CounterpartyID: o.MakerID,
-		Asset: o.Asset, Amount: coinQty, CardID: req.CardID,
+		Asset: o.Asset, Amount: coinQty, AllowanceID: req.AllowanceID,
 		State: order.Match, CreatedAt: now, UpdatedAt: now,
 		OTC: &order.OTC{
 			OfferID: o.ID, Side: takerSide, UnitPrice: o.UnitPrice,
@@ -188,8 +219,14 @@ func (s *Service) Take(ctx context.Context, takerID, offerID string, req TakeReq
 			return httpx.Fail(http.StatusConflict, "ABOVE_AVAILABLE_QTY", "amount",
 				"someone else just took that volume — try a smaller amount")
 		}
-		return store.AppendEvent(tx, ord.ID, "", string(order.Match), order.ActorOwner,
-			"Matched with "+o.Maker.DisplayName, map[string]string{"offer_id": o.ID})
+		if err := store.AppendEvent(tx, ord.ID, "", string(order.Match), order.ActorOwner,
+			"Matched with "+o.Maker.DisplayName, map[string]string{"offer_id": o.ID}); err != nil {
+			return err
+		}
+		return store.PostTx(tx, takerID, o.MakerID, &model.Message{
+			Author: "system", Kind: "order",
+			Body: "Matched with " + o.Maker.DisplayName, OrderID: ord.ID,
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -249,4 +286,91 @@ func contains(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// ── 快捷交易的撮合拍 ──
+
+type MatchReq struct {
+	Intent     string `json:"intent"` // buy | sell
+	Amount     string `json:"amount"`
+	AmountKind string `json:"amount_kind"`
+	Asset      string `json:"asset"`
+	Fiat       string `json:"fiat"`
+}
+
+type Candidate struct {
+	OfferID    string `json:"offer_id"`
+	Name       string `json:"name"`
+	PeerID     string `json:"peer_id"`
+	TrustScore int    `json:"trust_score"`
+	Deals      int    `json:"deals"`
+	UnitPrice  string `json:"unit_price"`
+	Fiat       string `json:"fiat"`
+	Coin       string `json:"coin_amount"`
+	FiatAmount string `json:"fiat_amount"`
+}
+
+type MatchResp struct {
+	Scanned    int         `json:"scanned"`
+	Candidates []Candidate `json:"candidates"`
+	Violation  *httpx.Err  `json:"violation,omitempty"`
+}
+
+// Match 先撮合、后评估：从池子里挑出成绩最好的三个候选。
+//
+// 顺序是刻意的。直接跳评估是逻辑倒置——对手方还没出现，评的是谁？
+func (s *Service) Match(ctx context.Context, req MatchReq) (*MatchResp, error) {
+	wantSide := "sell"
+	if req.Intent == "sell" {
+		wantSide = "buy"
+	}
+	all, err := s.St.Offers(ctx, store.OfferFilter{
+		Side: wantSide, Asset: req.Asset, Fiat: req.Fiat, Status: "active"})
+	if err != nil {
+		return nil, err
+	}
+	resp := &MatchResp{Scanned: len(all), Candidates: []Candidate{}}
+	if len(all) == 0 {
+		resp.Violation = httpx.Fail(422, "NO_COUNTERPARTY", "",
+			fmt.Sprintf("No live offers on that side right now"))
+		return resp, nil
+	}
+	// 成绩最好的排前面——快捷交易默认走第一个，所以排序就是默认选择
+	sort.Slice(all, func(i, j int) bool { return score(all[i]) > score(all[j]) })
+	for _, o := range all {
+		if len(resp.Candidates) == 3 {
+			break
+		}
+		coin, fiat, err := s.resolveAmount(o, TakeReq{Amount: req.Amount, AmountKind: req.AmountKind})
+		if err != nil {
+			continue
+		}
+		if v := s.checkLot(o, fiat); v != nil {
+			// 装不下这笔量的挂单不该出现在候选里
+			continue
+		}
+		c := Candidate{OfferID: o.ID, PeerID: o.MakerID, UnitPrice: o.UnitPrice.String(),
+			Fiat: o.Fiat, Coin: coin.String(), FiatAmount: fiat.Round(2).String()}
+		if o.Maker != nil {
+			c.Name = o.Maker.DisplayName
+		}
+		if o.Merchant != nil {
+			c.TrustScore, c.Deals = o.Merchant.TrustScore, o.Merchant.Deals
+		}
+		resp.Candidates = append(resp.Candidates, c)
+	}
+	if len(resp.Candidates) == 0 {
+		best := all[0]
+		coin, fiat, _ := s.resolveAmount(best, TakeReq{Amount: req.Amount, AmountKind: req.AmountKind})
+		_ = coin
+		resp.Violation = s.checkLot(best, fiat)
+	}
+	return resp, nil
+}
+
+func score(o *model.Offer) int {
+	if o.Merchant == nil {
+		return 0
+	}
+	return o.Merchant.TrustScore
 }

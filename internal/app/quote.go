@@ -15,7 +15,7 @@ import (
 // Parse 把一句话变成订单草稿。推断出来的槽位列在 Guessed 里，
 // 前端据此把它们标成虚线——「系统猜的」和「你说的」必须看得出区别。
 func (s *Service) Parse(ctx context.Context, actorID, text string) (agent.Draft, error) {
-	contacts, _ := s.St.Counterparties(ctx, actorID)
+	contacts, _ := s.St.Contacts(ctx, actorID)
 	in := agent.ParseInput{Text: text}
 	for _, a := range money.Cryptos() {
 		in.Assets = append(in.Assets, a.Code)
@@ -24,7 +24,7 @@ func (s *Service) Parse(ctx context.Context, actorID, text string) (agent.Draft,
 		in.Fiats = append(in.Fiats, f.Code)
 	}
 	for _, c := range contacts {
-		in.Contacts = append(in.Contacts, agent.Contact{ID: c.ID, Name: c.DisplayName})
+		in.Contacts = append(in.Contacts, agent.Contact{ID: c.ContactID, Name: c.Name})
 	}
 	return s.Ag.Parse(ctx, in)
 }
@@ -36,7 +36,7 @@ type QuoteReq struct {
 	Asset          string           `json:"asset"`
 	Fiat           string           `json:"fiat"`
 	CounterpartyID string           `json:"counterparty_id"`
-	CardID         string           `json:"card_id"`
+	AllowanceID    string           `json:"allowance_id"`
 	Conditions     []condition.Atom `json:"conditions"`
 }
 
@@ -90,10 +90,14 @@ func (s *Service) Quote(ctx context.Context, actorID string, req QuoteReq) (*Quo
 			prev.PeerName = u.DisplayName
 		}
 		if money.IsCrypto(req.Asset) && amt.IsPositive() {
-			if err := s.requireBalance(ctx, actorID, req.Asset, amt); err != nil {
-				add(err.(*httpx.Err))
+			// 查的是链上余额。不够也不是死路：可以用外部钱包给合约打款，
+			// 所以这条 violation 带着那条出路。
+			if u, err := s.St.User(ctx, actorID); err == nil {
+				if err := s.requireOnChain(ctx, u.Address, req.Asset, amt); err != nil {
+					add(err.(*httpx.Err))
+				}
 			}
-			if _, err := s.checkCard(ctx, actorID, req.CardID, money.New(amt, req.Asset)); err != nil {
+			if _, err := s.checkAllowance(ctx, actorID, req.AllowanceID, money.New(amt, req.Asset)); err != nil {
 				add(err.(*httpx.Err))
 			}
 		}

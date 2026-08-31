@@ -14,6 +14,8 @@ func TestTransitions(t *testing.T) {
 		to    State
 		term  Terminal
 	}{
+		{"入金确认后才锁住", ConditionalTransfer, Fund, EvFunded, ActorOwner, Locked, TermNone},
+		{"入金前撤单", ConditionalTransfer, Fund, EvCancel, ActorOwner, Cancelled, TermCancelled},
 		{"immediate 分支直接进放行", ConditionalTransfer, Locked, EvTick, ActorSystem, Releasing, TermNone},
 		{"锁定后等对手方", ConditionalTransfer, Locked, EvTick, ActorSystem, AwaitingCounterparty, TermNone},
 		{"对手方上传凭证", ConditionalTransfer, AwaitingCounterparty, EvEvidence, ActorCounterparty, AwaitingMe, TermNone},
@@ -23,6 +25,8 @@ func TestTransitions(t *testing.T) {
 		{"窗口内异议", ConditionalTransfer, AwaitingMe, EvDispute, ActorOwner, Disputed, TermDisputed},
 		{"条件成立前撤单", ConditionalTransfer, AwaitingCounterparty, EvCancel, ActorOwner, Cancelled, TermCancelled},
 		{"OTC 确认成交", OTCTake, Match, EvAccept, ActorOwner, S1, TermNone},
+		{"OTC 买方向：绑定挂单锁仓", OTCTake, S1, EvBind, ActorSystem, S3, TermNone},
+		{"OTC 卖方向：入金确认走满", OTCTake, S1, EvFunded, ActorOwner, S3, TermNone},
 		{"OTC 上传回执", OTCTake, S3, EvReceipt, ActorOwner, S4, TermNone},
 		{"OTC 核验放款", OTCTake, S4, EvTick, ActorSystem, S5, TermCompleted},
 		{"OTC 转账逾期", OTCTake, S3, EvTick, ActorSystem, Expired, TermExpired},
@@ -47,6 +51,8 @@ func TestTransitions(t *testing.T) {
 		actor Actor
 		to    State
 	}{
+		{"没入金不能直接锁住", ConditionalTransfer, Fund, EvTick, ActorSystem, Locked},
+		{"没入金不能直接放款", ConditionalTransfer, Fund, EvConfirm, ActorOwner, Released},
 		{"不许跳过对手方交付直接放款", ConditionalTransfer, AwaitingCounterparty, EvConfirm, ActorOwner, Released},
 		{"我不能替对手方上传凭证", ConditionalTransfer, AwaitingCounterparty, EvEvidence, ActorOwner, AwaitingMe},
 		{"对手方不能替我确认", ConditionalTransfer, AwaitingMe, EvConfirm, ActorCounterparty, Releasing},
@@ -55,6 +61,7 @@ func TestTransitions(t *testing.T) {
 		{"放行共识不能改判成异议", ConditionalTransfer, Releasing, EvReleaseVote, ActorAgent, Disputed},
 		{"OTC 不许跳过注资直接转账", OTCTake, Match, EvReceipt, ActorOwner, S4},
 		{"OTC 不许从 s1 直接放款", OTCTake, S1, EvTick, ActorSystem, S5},
+		{"OTC 不许靠 tick 跳过入金", OTCTake, S1, EvTick, ActorSystem, S3},
 		{"OTC 已进 s4 不能再撤", OTCTake, S4, EvCancel, ActorOwner, Cancelled},
 		{"OTC 的事件不能用在条件支付上", ConditionalTransfer, Locked, EvAccept, ActorOwner, S1},
 	}

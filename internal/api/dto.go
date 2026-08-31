@@ -91,9 +91,10 @@ type orderJSON struct {
 	Note        string      `json:"note,omitempty"`
 	Peer        string      `json:"counterparty_name,omitempty"`
 	PeerID      string      `json:"counterparty_id,omitempty"`
-	CardID      string      `json:"card_id,omitempty"`
+	AllowanceID string      `json:"card_id,omitempty"`
 	Deadline    *time.Time  `json:"state_deadline,omitempty"`
 	SecondsLeft int         `json:"seconds_left"`
+	Escrow      *escrowJSON `json:"escrow,omitempty"`
 	Rail        []railStop  `json:"rail"`
 	Condition   *condJSON   `json:"condition,omitempty"`
 	OTC         *otcJSON    `json:"otc,omitempty"`
@@ -114,21 +115,35 @@ type conditionAtom struct {
 	Params map[string]string `json:"params"`
 }
 
+// escrowJSON 是那个链上观察窗要的东西：合约地址、走了几个确认、tx 在哪看。
+// 这些是链的事实，不是平台的账。
+type escrowJSON struct {
+	Contract      string `json:"contract"`
+	Network       string `json:"network"`
+	Explorer      string `json:"explorer"`
+	FundingVia    string `json:"funding_via,omitempty"`
+	TxHash        string `json:"tx_hash,omitempty"`
+	Confirmations int    `json:"confirmations"`
+	Required      int    `json:"required"`
+	NeedsFunding  bool   `json:"needs_funding"`
+}
+
 type otcJSON struct {
-	OfferID   string `json:"offer_id"`
-	Side      string `json:"side"`
-	UnitPrice string `json:"unit_price"`
-	Fiat      string `json:"fiat_code"`
-	FiatAmt   string `json:"fiat_amount"`
-	Network   string `json:"network"`
-	Receipt   string `json:"receipt_ref,omitempty"`
+	OfferID    string `json:"offer_id"`
+	Side       string `json:"side"`
+	FundingVia string `json:"funding_via,omitempty"`
+	UnitPrice  string `json:"unit_price"`
+	Fiat       string `json:"fiat_code"`
+	FiatAmt    string `json:"fiat_amount"`
+	Network    string `json:"network"`
+	Receipt    string `json:"receipt_ref,omitempty"`
 }
 
 func (h *Handler) toOrder(ctx context.Context, o *order.Order, withEvents bool) orderJSON {
 	j := orderJSON{
 		ID: o.ID, Ref: o.Ref, Kind: string(o.Kind), State: string(o.State),
 		Terminal: string(o.Terminal), Amount: amt(o.Amount, o.Asset), Note: o.Note,
-		PeerID: o.CounterpartyID, CardID: o.CardID, Deadline: o.StateDeadline,
+		PeerID: o.CounterpartyID, AllowanceID: o.AllowanceID, Deadline: o.StateDeadline,
 		Rail: rail(o), CreatedAt: o.CreatedAt,
 	}
 	if o.StateDeadline != nil {
@@ -147,9 +162,17 @@ func (h *Handler) toOrder(ctx context.Context, o *order.Order, withEvents bool) 
 		}
 		j.Condition = c
 	}
+	j.Escrow = &escrowJSON{
+		Contract: o.EscrowAddr, Network: o.EscrowNetwork,
+		Explorer:   h.Svc.Ch.ExplorerURL(o.Asset, o.EscrowAddr),
+		FundingVia: o.FundingVia, TxHash: o.EscrowTx,
+		Confirmations: o.Confirmations, Required: o.Required,
+		NeedsFunding: o.NeedsFunding(),
+	}
 	if o.OTC != nil {
-		t := &otcJSON{OfferID: o.OTC.OfferID, Side: o.OTC.Side, UnitPrice: o.OTC.UnitPrice.String(),
-			Fiat: o.OTC.FiatCode, FiatAmt: o.OTC.FiatAmount.String(), Network: o.OTC.Network}
+		t := &otcJSON{OfferID: o.OTC.OfferID, Side: o.OTC.Side, FundingVia: o.OTC.FundingVia,
+			UnitPrice: o.OTC.UnitPrice.String(),
+			Fiat:      o.OTC.FiatCode, FiatAmt: o.OTC.FiatAmount.String(), Network: o.OTC.Network}
 		if ref, ok := h.St.Receipt(ctx, o.ID); ok {
 			t.Receipt = ref
 		}

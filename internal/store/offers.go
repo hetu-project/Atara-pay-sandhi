@@ -18,7 +18,7 @@ type OfferFilter struct {
 }
 
 const offerCols = `o.id,o.maker_id,o.side,o.asset_code,o.network,o.networks,o.fiat_code,
-	o.unit_price,o.qty,o.remaining_qty,o.min_lot,o.status,o.created_at`
+	o.unit_price,o.qty,o.remaining_qty,o.min_lot,o.lock_tx,o.status,o.created_at`
 
 func (s *Store) Offers(ctx context.Context, f OfferFilter) ([]*model.Offer, error) {
 	q := `select ` + offerCols + ` from offers o where 1=1`
@@ -80,7 +80,7 @@ func scanOffer(scan func(...any) error) (*model.Offer, error) {
 	var o model.Offer
 	var nets, price, qty, rem, minLot, created string
 	if err := scan(&o.ID, &o.MakerID, &o.Side, &o.Asset, &o.Network, &nets, &o.Fiat,
-		&price, &qty, &rem, &minLot, &o.Status, &created); err != nil {
+		&price, &qty, &rem, &minLot, &o.LockTx, &o.Status, &created); err != nil {
 		return nil, err
 	}
 	o.Networks = strings.Split(nets, ",")
@@ -92,11 +92,11 @@ func scanOffer(scan func(...any) error) (*model.Offer, error) {
 func (s *Store) InsertOffer(tx *sql.Tx, o *model.Offer) error {
 	_, err := tx.Exec(
 		`insert into offers(id,maker_id,side,asset_code,network,networks,fiat_code,
-			unit_price,qty,remaining_qty,min_lot,status,created_at,updated_at)
-		 values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			unit_price,qty,remaining_qty,min_lot,lock_tx,status,created_at,updated_at)
+		 values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		o.ID, o.MakerID, o.Side, o.Asset, o.Network, strings.Join(o.Networks, ","), o.Fiat,
 		decStr(o.UnitPrice), decStr(o.Qty), decStr(o.RemainingQty), decStr(o.MinLot),
-		o.Status, ts(o.CreatedAt), ts(o.CreatedAt))
+		o.LockTx, o.Status, ts(o.CreatedAt), ts(o.CreatedAt))
 	return err
 }
 
@@ -109,7 +109,7 @@ func ReserveQty(tx *sql.Tx, offerID string, delta decimal.Decimal) error {
 	}
 	next := o.RemainingQty.Add(delta)
 	if next.IsNegative() {
-		return ErrInsufficient
+		return ErrOversold
 	}
 	status := o.Status
 	if next.IsZero() && o.Status == "active" {
@@ -120,6 +120,11 @@ func ReserveQty(tx *sql.Tx, offerID string, delta decimal.Decimal) error {
 	}
 	_, err = tx.Exec(`update offers set remaining_qty=?, status=?, updated_at=? where id=?`,
 		decStr(next), status, ts(Now()), offerID)
+	return err
+}
+
+func SetOfferLockTx(tx *sql.Tx, offerID, tx2 string) error {
+	_, err := tx.Exec(`update offers set lock_tx=? where id=?`, tx2, offerID)
 	return err
 }
 

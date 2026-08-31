@@ -10,15 +10,16 @@ import (
 	"github.com/advaita/atara-pay/internal/domain/order"
 )
 
-const orderCols = `id,ref,kind,owner_id,counterparty_id,asset_code,amount,note,card_id,
-	state,terminal,state_deadline,created_at,updated_at`
+const orderCols = `id,ref,kind,owner_id,counterparty_id,asset_code,amount,note,allowance_id,
+	state,terminal,state_deadline,funding_via,escrow_tx,escrow_addr,escrow_network,created_at,updated_at`
 
 func (s *Store) InsertOrder(tx *sql.Tx, o *order.Order) error {
 	if _, err := tx.Exec(
-		`insert into orders(`+orderCols+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`insert into orders(`+orderCols+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		o.ID, o.Ref, o.Kind, o.OwnerID, emptyToNull(o.CounterpartyID), o.Asset, decStr(o.Amount),
-		o.Note, emptyToNull(o.CardID), o.State, emptyToNull(string(o.Terminal)),
-		nullTS(o.StateDeadline), ts(o.CreatedAt), ts(o.UpdatedAt)); err != nil {
+		o.Note, emptyToNull(o.AllowanceID), o.State, emptyToNull(string(o.Terminal)),
+		nullTS(o.StateDeadline), o.FundingVia, o.EscrowTx, o.EscrowAddr, o.EscrowNetwork,
+		ts(o.CreatedAt), ts(o.UpdatedAt)); err != nil {
 		return err
 	}
 	if o.Cond != nil {
@@ -99,6 +100,7 @@ func loadOrder(scan func(...any) error,
 			Scan(&t.OfferID, &t.Side, &price, &t.FiatCode, &amt, &t.Network)
 		if err == nil {
 			t.UnitPrice, t.FiatAmount = dec(price), dec(amt)
+			t.FundingVia = o.FundingVia
 			o.OTC = &t
 		}
 	}
@@ -110,10 +112,11 @@ func scanOrder(scan func(...any) error) (*order.Order, error) {
 	var cp, card, term, deadline sql.NullString
 	var amount, created, updated string
 	if err := scan(&o.ID, &o.Ref, &o.Kind, &o.OwnerID, &cp, &o.Asset, &amount, &o.Note, &card,
-		&o.State, &term, &deadline, &created, &updated); err != nil {
+		&o.State, &term, &deadline, &o.FundingVia, &o.EscrowTx, &o.EscrowAddr, &o.EscrowNetwork,
+		&created, &updated); err != nil {
 		return nil, err
 	}
-	o.CounterpartyID, o.CardID = nullStr(cp), nullStr(card)
+	o.CounterpartyID, o.AllowanceID = nullStr(cp), nullStr(card)
 	o.Terminal = order.Terminal(nullStr(term))
 	o.Amount = dec(amount)
 	o.CreatedAt, o.UpdatedAt = parseTS(created), parseTS(updated)
@@ -126,6 +129,7 @@ func scanOrder(scan func(...any) error) (*order.Order, error) {
 
 type OrderFilter struct {
 	Owner    string
+	Peer     string // 只要与这个对手方之间的单——线程视图用
 	Kind     string
 	State    string
 	Terminal string
@@ -138,6 +142,10 @@ func (s *Store) Orders(ctx context.Context, f OrderFilter) ([]*order.Order, erro
 	if f.Owner != "" {
 		q += ` and (owner_id=? or counterparty_id=?)`
 		args = append(args, f.Owner, f.Owner)
+	}
+	if f.Peer != "" {
+		q += ` and (counterparty_id=? or owner_id=?)`
+		args = append(args, f.Peer, f.Peer)
 	}
 	if f.Kind != "" {
 		q += ` and kind=?`
@@ -215,8 +223,10 @@ func (s *Store) Due(ctx context.Context, now time.Time) ([]*order.Order, error) 
 
 func SaveState(tx *sql.Tx, o *order.Order) error {
 	_, err := tx.Exec(
-		`update orders set state=?, terminal=?, state_deadline=?, updated_at=? where id=?`,
-		o.State, emptyToNull(string(o.Terminal)), nullTS(o.StateDeadline), ts(Now()), o.ID)
+		`update orders set state=?, terminal=?, state_deadline=?,
+		   funding_via=?, escrow_tx=?, escrow_addr=?, escrow_network=?, updated_at=? where id=?`,
+		o.State, emptyToNull(string(o.Terminal)), nullTS(o.StateDeadline),
+		o.FundingVia, o.EscrowTx, o.EscrowAddr, o.EscrowNetwork, ts(Now()), o.ID)
 	return err
 }
 

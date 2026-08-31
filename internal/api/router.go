@@ -30,29 +30,49 @@ func (h *Handler) Router() http.Handler {
 			r.Get("/intents", h.Intents)
 		})
 
+		// 账户：地址就是身份，余额读链
+		r.Get("/me", h.Me)
+		r.Post("/auth/connect", h.Connect)
 		r.Get("/wallet", h.Wallet)
-		r.Get("/authorization-cards", h.Cards)
-		r.Get("/counterparties", h.Counterparties)
 		r.Post("/passkey/assert", h.PasskeyAssert)
 		r.Post("/uploads", h.Upload)
 		r.Get("/uploads/*", h.ServeUpload)
+
+		// 额度：不是卡，是签进链上的支配权
+		r.Route("/allowances", func(r chi.Router) {
+			r.Get("/", h.Allowances)
+			r.Post("/", h.SaveAllowance)
+			r.Post("/{id}", h.SaveAllowance)
+			r.Delete("/{id}", h.RevokeAllowance)
+		})
+
+		// 联系人：一个字段收名字或地址
+		r.Get("/contacts", h.Contacts)
+		r.Post("/contacts", h.AddContact)
+
+		// 一个对手方一条线程
+		r.Get("/threads", h.Threads)
+		r.Get("/threads/{peer}", h.Thread)
+		r.Post("/threads/{peer}/messages", h.PostChat)
 
 		// New order
 		r.Route("/orders", func(r chi.Router) {
 			r.Post("/parse", h.Parse)
 			r.Post("/quote", h.Quote)
+			r.Post("/match", h.Match)
 			r.Post("/", h.CreateOrder)
 			r.Get("/", h.ListOrders)
 			r.Route("/{id}", func(r chi.Router) {
 				r.Get("/", h.GetOrder)
 				r.Get("/events", h.OrderEvents)
 				r.Get("/release-consensus", h.ReleaseConsensus)
+				r.Get("/escrow", h.Escrow)
+				r.Post("/fund", h.Fund)
 				r.Post("/confirm", h.Confirm)
 				r.Post("/evidence", h.Evidence)
 				r.Post("/cancel", h.Cancel)
 				r.Post("/dispute", h.Dispute)
 				r.Post("/accept", h.Accept)
-				r.Post("/fund", h.Fund)
 				r.Post("/receipt", h.Receipt)
 			})
 		})

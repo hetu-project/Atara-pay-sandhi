@@ -23,6 +23,9 @@ type State string
 
 // 条件支付托管的状态
 const (
+	// Fund 是非托管的第一拍：钱还没动，合约在等这一方入金。
+	// 旧版「建单即锁币」是托管模型的写法，平台不再持有资金，这一站就必须存在。
+	Fund                 State = "fund"
 	Locked               State = "locked"
 	AwaitingCounterparty State = "awaiting_counterparty"
 	AwaitingMe           State = "awaiting_me"
@@ -71,6 +74,7 @@ type Event string
 
 const (
 	EvCreate      Event = "create"
+	EvFunded      Event = "funded" // 链上确认数走满，合约真的拿到钱了
 	EvTick        Event = "tick"
 	EvConfirm     Event = "confirm"
 	EvEvidence    Event = "evidence"
@@ -79,6 +83,7 @@ const (
 	EvReleaseVote Event = "release_vote"
 	EvAccept      Event = "accept"
 	EvFund        Event = "fund"
+	EvBind        Event = "bind" // 绑定挂单时已锁的仓位
 	EvReceipt     Event = "receipt"
 )
 
@@ -91,8 +96,11 @@ type Conditional struct {
 }
 
 type OTC struct {
-	OfferID    string          `json:"offer_id"`
-	Side       string          `json:"side"` // taker 视角：buy | sell
+	OfferID string `json:"offer_id"`
+	// FundingVia 只在 taker 卖币时有意义：他要出币，所以要选怎么出。
+	// taker 买币时币是对方挂单时就锁好的，没有这个选择。
+	FundingVia string          `json:"funding_via,omitempty"` // wallet | external
+	Side       string          `json:"side"`                  // taker 视角：buy | sell
 	UnitPrice  decimal.Decimal `json:"unit_price"`
 	FiatCode   string          `json:"fiat_code"`
 	FiatAmount decimal.Decimal `json:"fiat_amount"`
@@ -108,7 +116,7 @@ type Order struct {
 	Asset          string
 	Amount         decimal.Decimal
 	Note           string
-	CardID         string
+	AllowanceID    string
 	State          State
 	Terminal       Terminal
 	StateDeadline  *time.Time
@@ -118,6 +126,27 @@ type Order struct {
 	Cond  *Conditional
 	Conds []condition.Atom
 	OTC   *OTC
+
+	// 地址是放款的目的地。非托管下钱打给地址，不是打给某个平台账户。
+	OwnerAddr string
+	PayeeAddr string
+
+	// 链上事实。这几个字段是从 chain.Chain 读回来的快照，不是平台自己的账。
+	FundingVia    string
+	EscrowTx      string
+	EscrowAddr    string
+	EscrowNetwork string
+	Confirmations int
+	Required      int
+}
+
+// NeedsFunding 说这笔单还等着谁把钱打进合约。
+// taker 买币的 OTC 单不需要——币在对方挂单那一刻就在合约里了。
+func (o *Order) NeedsFunding() bool {
+	if o.Kind == ConditionalTransfer {
+		return o.State == Fund
+	}
+	return o.OTC != nil && o.OTC.Side == "sell" && o.State == S1
 }
 
 func (o *Order) IsTerminal() bool { return o.Terminal != TermNone }
