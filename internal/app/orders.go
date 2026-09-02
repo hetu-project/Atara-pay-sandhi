@@ -330,12 +330,54 @@ func (s *Service) Receipt(ctx context.Context, actorID, orderID, fileRef string)
 	if o.OwnerID != actorID {
 		actor = order.ActorCounterparty
 	}
-	return s.advance(ctx, o.ID, order.EvReceipt, actor, order.S4,
-		"Receipt uploaded · the platform is verifying it against the escrow",
+	return s.advance(ctx, o.ID, order.EvReceipt, actor, order.S3V,
+		"Receipt uploaded · waiting on the other side to check it against the order",
 		map[string]string{"file_ref": fileRef}, nil,
 		func(tx *sql.Tx, oo *order.Order) error {
 			_, err := store.InsertReceipt(tx, oo.ID, actorID, fileRef)
 			return err
+		})
+}
+
+// VerifyReceipt 是 OTC 的放行闸门。放行不等对方开口，等的是回执被核过——
+// 所以核验只能由收法币的那一方做，上传者不能自己核自己的。转移表里这两条边
+// 的 actor 集合放得比较宽（含系统），收紧就落在这里。
+func (s *Service) VerifyReceipt(ctx context.Context, actorID, orderID string,
+	okFlag bool, reason string) (*order.Order, error) {
+	o, err := s.St.Order(ctx, orderID)
+	if err != nil {
+		return nil, httpx.NotFound("order")
+	}
+	if o.OwnerID != actorID && o.CounterpartyID != actorID {
+		return nil, httpx.Fail(http.StatusForbidden, "NOT_YOURS", "", "this order belongs to another account")
+	}
+	rc, found := s.St.LatestReceipt(ctx, o.ID)
+	if !found {
+		return nil, httpx.Fail(http.StatusUnprocessableEntity, "NO_RECEIPT", "",
+			"there is no receipt to check yet")
+	}
+	if rc.UploaderID == actorID {
+		return nil, httpx.Fail(http.StatusForbidden, "NOT_YOUR_CALL", "",
+			"the side that uploaded the receipt cannot be the one that clears it")
+	}
+	actor := order.ActorOwner
+	if o.OwnerID != actorID {
+		actor = order.ActorCounterparty
+	}
+	if !okFlag {
+		if reason == "" {
+			reason = "the receipt does not match this order"
+		}
+		return s.advance(ctx, o.ID, order.EvDispute, actor, order.Disputed,
+			"Receipt rejected · "+reason,
+			map[string]string{"receipt_id": rc.ID, "reason": reason}, nil, nil)
+	}
+	now := time.Now()
+	return s.advance(ctx, o.ID, order.EvVerify, actor, order.S4,
+		"Receipt verified · releasing to them",
+		map[string]string{"receipt_id": rc.ID}, nil,
+		func(tx *sql.Tx, _ *order.Order) error {
+			return store.MarkReceiptVerified(tx, rc.ID, now)
 		})
 }
 
@@ -469,8 +511,8 @@ func (s *Service) tickOTC(ctx context.Context, o *order.Order) error {
 		// 卖方向：法币是对方打的。种子商家没有客户端，调度器代传那张回执——
 		// 与代跑注资同一个道理，接真商户时删掉这一支即可。
 		if o.OTC != nil && o.OTC.Side == "sell" {
-			_, err := s.advance(ctx, o.ID, order.EvReceipt, order.ActorCounterparty, order.S4,
-				"They uploaded a receipt · the platform is verifying it against the escrow", nil, nil,
+			_, err := s.advance(ctx, o.ID, order.EvReceipt, order.ActorCounterparty, order.S3V,
+				"They uploaded a receipt · check it against the order", nil, nil,
 				func(tx *sql.Tx, oo *order.Order) error {
 					_, err := store.InsertReceipt(tx, oo.ID, oo.CounterpartyID, "simulated-counterparty-receipt")
 					return err
@@ -480,6 +522,29 @@ func (s *Service) tickOTC(ctx context.Context, o *order.Order) error {
 		// 买方向：你付法币，到点没付就是你逾期。
 		_, err := s.advance(ctx, o.ID, order.EvTick, order.ActorSystem, order.Expired,
 			"Payment window missed · the contract returned the coins to the counterparty", nil, nil,
+			func(tx *sql.Tx, oo *order.Order) error { return s.releaseReservation(tx, oo) })
+		return err
+
+	case order.S3V:
+		// 买方向：法币是你打的，该核验回执的是对方 maker。种子商家没有客户端，
+		// 调度器代他核——与上面代传回执同一个道理，接真商户时删掉这一支即可。
+		if o.OTC != nil && o.OTC.Side == "buy" {
+			rc, found := s.St.LatestReceipt(ctx, o.ID)
+			if !found {
+				return fmt.Errorf("order %s is at s3v with no receipt", o.Ref)
+			}
+			now := time.Now()
+			_, err := s.advance(ctx, o.ID, order.EvVerify, order.ActorCounterparty, order.S4,
+				"Receipt verified · releasing to you", map[string]string{"receipt_id": rc.ID}, nil,
+				func(tx *sql.Tx, _ *order.Order) error {
+					return store.MarkReceiptVerified(tx, rc.ID, now)
+				})
+			return err
+		}
+		// 卖方向：法币是对方打的，该核验的是你本人。到点没核就是你逾期——
+		// 放行只认核过的回执，没人核就没有放行依据。
+		_, err := s.advance(ctx, o.ID, order.EvTick, order.ActorSystem, order.Expired,
+			"You never checked their receipt · the window closed and the contract unwound", nil, nil,
 			func(tx *sql.Tx, oo *order.Order) error { return s.releaseReservation(tx, oo) })
 		return err
 

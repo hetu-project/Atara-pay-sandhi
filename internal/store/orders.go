@@ -280,3 +280,37 @@ func (s *Store) Receipt(ctx context.Context, orderID string) (string, bool) {
 		`select file_ref from fiat_receipts where order_id=? order by created_at desc limit 1`, orderID).Scan(&ref)
 	return ref, err == nil
 }
+
+// ReceiptRow 是核验要用到的回执事实：谁传的、核过没有。
+// 原有的 Receipt 只回 file_ref，判断「谁不能核自己的回执」还需要上传者。
+type ReceiptRow struct {
+	ID         string
+	FileRef    string
+	UploaderID string
+	VerifiedAt *time.Time
+}
+
+func (s *Store) LatestReceipt(ctx context.Context, orderID string) (*ReceiptRow, bool) {
+	var r ReceiptRow
+	var verified sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`select id, file_ref, uploader_id, verified_at from fiat_receipts
+		  where order_id=? order by created_at desc limit 1`, orderID).
+		Scan(&r.ID, &r.FileRef, &r.UploaderID, &verified)
+	if err != nil {
+		return nil, false
+	}
+	if verified.Valid {
+		if t, e := time.Parse(time.RFC3339Nano, verified.String); e == nil {
+			r.VerifiedAt = &t
+		}
+	}
+	return &r, true
+}
+
+// MarkReceiptVerified 记下这张回执被核过的时刻。核验通过与状态推进同属一个
+// 事务——回执标记住了但订单没走，或者反过来，都会让放行依据和状态对不上。
+func MarkReceiptVerified(tx *sql.Tx, receiptID string, at time.Time) error {
+	_, err := tx.Exec(`update fiat_receipts set verified_at=? where id=?`, ts(at), receiptID)
+	return err
+}

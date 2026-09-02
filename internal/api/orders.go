@@ -211,3 +211,22 @@ func (h *Handler) transition(w http.ResponseWriter, r *http.Request, fn func(str
 	}
 	ok(w, h.toOrder(r.Context(), h.actorID(r), o, true))
 }
+
+// VerifyReceipt 是收法币的一方核验对方回执的入口。
+// ok=false 表示回执对不上，直接转异议——放行只认核过的回执。
+func (h *Handler) VerifyReceipt(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OK     bool   `json:"ok"`
+		Reason string `json:"reason"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	o, err := h.Svc.VerifyReceipt(r.Context(), h.actorID(r), chi.URLParam(r, "id"), req.OK, req.Reason)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, h.toOrder(r.Context(), h.actorID(r), o, true))
+}

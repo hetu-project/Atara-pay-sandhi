@@ -74,6 +74,7 @@ func (h *Handler) Router() http.Handler {
 				r.Post("/dispute", h.Dispute)
 				r.Post("/accept", h.Accept)
 				r.Post("/receipt", h.Receipt)
+				r.Post("/verify-receipt", h.VerifyReceipt)
 			})
 		})
 

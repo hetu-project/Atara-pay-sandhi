@@ -78,6 +78,15 @@ call(f"/orders/{bid}/accept", {}, conf=tok("accept", [bid], "commit"))   # 不�
 s3 = wait(bid, "s3")
 check("绑定挂单锁仓后轮到我付法币", s3["state"], "s3")
 call(f"/orders/{bid}/receipt", {"file_ref": "demo-receipt.pdf"})
+v = wait(bid, "s3v")
+check("上传回执后待对方核验", v["state"], "s3v")
+check("付方此刻无事可做", f"{v['phase']}/{v['actor']}", "lock/auto")
+mv = call("/orders/" + bid, who="CrabWalk Trading")
+check("同一张单在收方眼里该核验", f"{mv['phase']}/{mv['actor']}", "verify/you")
+# 放行的依据是回执被对方核过。自己核自己，等于退回成「等对方点确认」——
+# 那正是 V1 要甩掉的东西，所以这条断言是这条链路的要害。
+bad = call(f"/orders/{bid}/verify-receipt", {"ok": True})
+check("上传者不能核自己的回执", bad["error"]["code"], "NOT_YOUR_CALL")
 check("买方向走到终态", wait(bid, "s5")["terminal"], "completed")
 
 print("\n── OTC · taker 卖币（自己的币上链 → s1 走确认数）──")
@@ -88,6 +97,10 @@ check("轨道第二站", d["rail"][1]["label"], "Escrow funded")
 bad = call(f"/orders/{sid}/accept", {"via": "wallet"}, conf=tok("accept", [sid], "commit"))
 check("卖币要签名档", bad["error"]["code"], "SIGNATURE_REQUIRED")
 call(f"/orders/{sid}/accept", {"via": "wallet"}, conf=tok("accept", [sid], "signature"))
+sv = wait(sid, "s3v", 60)
+check("对方回执到了轮到我核验", sv["state"], "s3v")
+check("我该核验", f"{sv['phase']}/{sv['actor']}", "verify/you")
+call(f"/orders/{sid}/verify-receipt", {"ok": True})
 check("卖方向走到终态", wait(sid, "s5", 60)["terminal"], "completed")
 
 print("\n── 额度：签发 / 过期 / 撤销 ──")
