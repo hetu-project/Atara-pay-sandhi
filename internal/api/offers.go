@@ -116,7 +116,7 @@ func (h *Handler) Take(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusCreated, h.toOrder(r.Context(), o, true))
+	httpx.JSON(w, http.StatusCreated, h.toOrder(r.Context(), h.actorID(r), o, true))
 }
 
 func storeFilter(owner, kind, state, terminal string, open bool) store.OrderFilter {

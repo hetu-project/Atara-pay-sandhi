@@ -87,6 +87,8 @@ type orderJSON struct {
 	Kind        string      `json:"kind"`
 	State       string      `json:"state"`
 	Terminal    string      `json:"terminal,omitempty"`
+	Phase       *string     `json:"phase"`
+	Actor       *string     `json:"actor"`
 	Amount      amountJSON  `json:"amount"`
 	Note        string      `json:"note,omitempty"`
 	Peer        string      `json:"counterparty_name,omitempty"`
@@ -139,7 +141,7 @@ type otcJSON struct {
 	Receipt    string `json:"receipt_ref,omitempty"`
 }
 
-func (h *Handler) toOrder(ctx context.Context, o *order.Order, withEvents bool) orderJSON {
+func (h *Handler) toOrder(ctx context.Context, viewerID string, o *order.Order, withEvents bool) orderJSON {
 	j := orderJSON{
 		ID: o.ID, Ref: o.Ref, Kind: string(o.Kind), State: string(o.State),
 		Terminal: string(o.Terminal), Amount: amt(o.Amount, o.Asset), Note: o.Note,
@@ -161,6 +163,11 @@ func (h *Handler) toOrder(ctx context.Context, o *order.Order, withEvents bool) 
 			c.Atoms = append(c.Atoms, conditionAtom{string(a.Type), a.Params})
 		}
 		j.Condition = c
+	}
+	// 阶段是按观察者算的：同一张单，付法币的一方看到 pay，另一方看到 wait。
+	if p, a, ok := o.PhaseFor(viewerID); ok {
+		ps, as := string(p), string(a)
+		j.Phase, j.Actor = &ps, &as
 	}
 	j.Escrow = &escrowJSON{
 		Contract: o.EscrowAddr, Network: o.EscrowNetwork,

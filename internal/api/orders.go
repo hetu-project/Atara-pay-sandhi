@@ -50,7 +50,7 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusCreated, h.toOrder(r.Context(), o, true))
+	httpx.JSON(w, http.StatusCreated, h.toOrder(r.Context(), h.actorID(r), o, true))
 }
 
 func (h *Handler) GetOrder(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +61,7 @@ func (h *Handler) GetOrder(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	ok(w, h.toOrder(r.Context(), o, true))
+	ok(w, h.toOrder(r.Context(), h.actorID(r), o, true))
 }
 
 func (h *Handler) ListOrders(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +77,7 @@ func (h *Handler) ListOrders(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			full = o
 		}
-		out = append(out, h.toOrder(r.Context(), full, false))
+		out = append(out, h.toOrder(r.Context(), h.actorID(r), full, false))
 	}
 	ok(w, map[string]any{"orders": out})
 }
@@ -209,5 +209,5 @@ func (h *Handler) transition(w http.ResponseWriter, r *http.Request, fn func(str
 		httpx.Error(w, err)
 		return
 	}
-	ok(w, h.toOrder(r.Context(), o, true))
+	ok(w, h.toOrder(r.Context(), h.actorID(r), o, true))
 }
