@@ -51,6 +51,17 @@ func (h *Handler) Router() http.Handler {
 		r.Get("/withdrawals", h.Withdrawals)
 		r.Post("/withdrawals", h.CreateWithdrawal)
 
+		// Maker 申请：两段提交，审核是真人动作
+		r.Get("/maker/application", h.MakerApplication)
+		r.Post("/maker/application", h.SubmitMakerApplication)
+
+		// 审核不算 agent 共识，所以挡在 reviewer 角色后面，系统不自动放行
+		r.Route("/admin/maker", func(r chi.Router) {
+			r.Use(auth.RequireRole("reviewer"))
+			r.Get("/applications", h.PendingMakerApplications)
+			r.Post("/applications/{user_id}/review", h.ReviewMakerApplication)
+		})
+
 		// 额度：不是卡，是签进链上的支配权
 		r.Route("/allowances", func(r chi.Router) {
 			r.Get("/", h.Allowances)

@@ -135,3 +135,21 @@ func (c *Confirmations) Consume(ctx context.Context, raw, userID, digest string,
 
 // 注意：摘要不匹配时令牌已经被 ConsumeConfirmation 作废了。这是有意的——
 // 摘要对不上说明这枚令牌本就不该用于这次操作，留着它只会给重放留口子。
+
+// RequireRole 挡住没有该角色的人。
+//
+// maker 审核不是 agent 共识，所以既不能由系统自动放行，也不能人人都能点——
+// 「不算共识」这句话落到代码上，就是这一层。
+func RequireRole(role string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			u := Actor(r.Context())
+			if u == nil || u.Role != role {
+				httpx.Error(w, httpx.Fail(http.StatusForbidden, "ROLE_REQUIRED", "",
+					"this action needs the "+role+" role"))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
