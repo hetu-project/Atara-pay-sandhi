@@ -36,7 +36,10 @@ func otcRail(o *order.Order) []railStop {
 			{"s4", "Verify & release", "", "the platform"},
 		}
 	}
-	idx := map[order.State]int{order.Match: 0, order.S1: 1, order.S3: 2, order.S4: 3, order.S5: 4}
+	// s3v 与 s4 同落在「Verify & release」这一站：核验和放款是同一段人看到的事。
+	// 漏掉 s3v 会让 idx 取到零值，进度条在待核验时跳回第一站。
+	idx := map[order.State]int{order.Match: 0, order.S1: 1, order.S3: 2,
+		order.S3V: 3, order.S4: 3, order.S5: 4}
 	return mark(stops, idx[o.State], o)
 }
 
