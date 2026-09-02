@@ -176,7 +176,11 @@ func (h *Handler) PasskeyAssert(w http.ResponseWriter, r *http.Request) {
 		g = auth.GradeSignature
 	}
 	digest := app.Digest(append([]string{req.Scope}, req.Parts...)...)
-	tok, exp := h.Svc.Confirm.Issue(h.actorID(r), digest, g)
+	tok, exp, err := h.Svc.Confirm.Issue(r.Context(), h.actorID(r), digest, g)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	ok(w, map[string]any{
 		"confirmation": tok, "expires_at": exp, "grade": g, "header": auth.HeaderConfirm,
 	})

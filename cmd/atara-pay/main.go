@@ -42,7 +42,7 @@ func main() {
 	if err := st.Seed(ctx, ch); err != nil {
 		log.Fatalf("seed: %v", err)
 	}
-	svc := app.New(st, ag, ch, cfg, auth.NewConfirmations())
+	svc := app.New(st, ag, ch, cfg, auth.NewConfirmations(st))
 	go scheduler.New(svc).Run(ctx)
 
 	srv := &http.Server{

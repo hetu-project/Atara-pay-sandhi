@@ -10,7 +10,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/advaita/atara-pay/internal/domain/model"
@@ -69,25 +68,28 @@ const (
 	GradeCommit Grade = "commit"
 )
 
-type token struct {
-	userID string
-	digest string
-	grade  Grade
-	expiry time.Time
+// Store 是 Confirmations 需要的持久化能力。定义在这里而不是引 store 包，
+// 是为了不让 auth 反向依赖 store——auth 被 store 之外的地方也用。
+//
+// 两个方法都只回传标量，不回传行结构体：store 层与 auth 层是两个包，
+// 各自定义一个同形结构体（比如 ConfirmRow）互相代替没有意义——Go 按方法
+// 签名的具体类型判定接口实现，两个不同包的同名结构体不是同一个类型，
+// store.Store 也就无法直接满足这里的接口，还得再写一层适配器。摘要与
+// 分级只是两个字符串，直接传值就够，没必要为它们抽一个类型。
+type Store interface {
+	InsertConfirmation(ctx context.Context, token, userID, digest, grade string, expiresAt time.Time) error
+	ConsumeConfirmation(ctx context.Context, token, userID string, now time.Time) (digest, grade string, err error)
 }
 
 // Confirmations 保管短时、一次性的支付确认令牌。
 // R2 动钱必确认：每一笔资金流出都要过支付确认面板 + Passkey，无金额豁免。
-type Confirmations struct {
-	mu sync.Mutex
-	m  map[string]token
-}
+type Confirmations struct{ st Store }
 
-func NewConfirmations() *Confirmations { return &Confirmations{m: map[string]token{}} }
+func NewConfirmations(st Store) *Confirmations { return &Confirmations{st: st} }
 
 // Issue 签发一枚绑定到 (用户, 操作摘要) 的令牌。
 // digest 是「这次要确认的到底是哪笔」——换了金额或对手方，旧令牌就不认了。
-func (c *Confirmations) Issue(userID, digest string, g Grade) (string, time.Time) {
+func (c *Confirmations) Issue(ctx context.Context, userID, digest string, g Grade) (string, time.Time, error) {
 	if g == "" {
 		g = GradeSignature
 	}
@@ -95,16 +97,15 @@ func (c *Confirmations) Issue(userID, digest string, g Grade) (string, time.Time
 	_, _ = rand.Read(b)
 	t := hex.EncodeToString(b)
 	exp := time.Now().Add(confirmTTL)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.m[t] = token{userID: userID, digest: digest, grade: g, expiry: exp}
-	return t, exp
+	if err := c.st.InsertConfirmation(ctx, t, userID, digest, string(g), exp); err != nil {
+		return "", time.Time{}, err
+	}
+	return t, exp, nil
 }
 
-// Consume 校验并作废令牌。一次性——重放一笔已确认的支付不该再通过。
 // Consume 校验并作废令牌。need 是这次操作要求的最低档：
 // 要求签名档时，一张只承诺过的令牌不能放行。
-func (c *Confirmations) Consume(raw, userID, digest string, need Grade) error {
+func (c *Confirmations) Consume(ctx context.Context, raw, userID, digest string, need Grade) error {
 	if need == "" {
 		need = GradeSignature
 	}
@@ -115,27 +116,22 @@ func (c *Confirmations) Consume(raw, userID, digest string, need Grade) error {
 		}
 		return httpx.Fail(http.StatusUnauthorized, "CONFIRMATION_REQUIRED", "", msg)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	t, ok := c.m[raw]
-	if !ok {
-		return httpx.Fail(http.StatusUnauthorized, "CONFIRMATION_INVALID", "", "confirmation already used or unknown")
+	digestGot, grade, err := c.st.ConsumeConfirmation(ctx, raw, userID, time.Now())
+	if err != nil {
+		return httpx.Fail(http.StatusUnauthorized, "CONFIRMATION_INVALID", "",
+			"confirmation expired, already used, or belongs to another account")
 	}
-	delete(c.m, raw)
-	if time.Now().After(t.expiry) {
-		return httpx.Fail(http.StatusUnauthorized, "CONFIRMATION_INVALID", "", "confirmation expired")
-	}
-	if t.userID != userID {
-		return httpx.Fail(http.StatusUnauthorized, "CONFIRMATION_INVALID", "", "confirmation belongs to another account")
-	}
-	if t.digest != "" && digest != "" && t.digest != digest {
+	if digestGot != "" && digest != "" && digestGot != digest {
 		return httpx.Fail(http.StatusUnauthorized, "CONFIRMATION_INVALID", "",
 			"the payment changed after you confirmed it — confirm again")
 	}
 	// 承诺档不能冒充签名档。反过来可以：签名比承诺更强。
-	if need == GradeSignature && t.grade != GradeSignature {
+	if need == GradeSignature && Grade(grade) != GradeSignature {
 		return httpx.Fail(http.StatusUnauthorized, "SIGNATURE_REQUIRED", "",
 			"this moves funds — it needs a passkey signature, not just a confirmation")
 	}
 	return nil
 }
+
+// 注意：摘要不匹配时令牌已经被 ConsumeConfirmation 作废了。这是有意的——
+// 摘要对不上说明这枚令牌本就不该用于这次操作，留着它只会给重放留口子。

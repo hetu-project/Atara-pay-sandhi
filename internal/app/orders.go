@@ -65,7 +65,7 @@ func (s *Service) CreateConditional(ctx context.Context, ownerID, confirmToken s
 		return nil, err
 	}
 	// 建单只是承诺这笔单的条款；动钱在 fund 那一步签名。
-	if err := s.Confirm.Consume(confirmToken, ownerID,
+	if err := s.Confirm.Consume(ctx, confirmToken, ownerID,
 		Digest("order", req.CounterpartyID, req.Asset, amt.String()), auth.GradeCommit); err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func (s *Service) Fund(ctx context.Context, actorID, orderID, confirmToken strin
 
 	if via == chain.ViaWallet {
 		// 签的是这笔链上转账本身，所以必须是签名档。
-		if err := s.Confirm.Consume(confirmToken, actorID,
+		if err := s.Confirm.Consume(ctx, confirmToken, actorID,
 			Digest("fund", o.ID, o.Asset, o.Amount.String()), auth.GradeSignature); err != nil {
 			return nil, err
 		}
@@ -158,7 +158,7 @@ func (s *Service) Fund(ctx context.Context, actorID, orderID, confirmToken strin
 		}
 	} else {
 		// 外部钱包：钱从我们看不见的地方来，这里只是开始盯合约。
-		if err := s.Confirm.Consume(confirmToken, actorID,
+		if err := s.Confirm.Consume(ctx, confirmToken, actorID,
 			Digest("fund", o.ID, o.Asset, o.Amount.String()), auth.GradeCommit); err != nil {
 			return nil, err
 		}
@@ -275,7 +275,7 @@ func (s *Service) Accept(ctx context.Context, actorID, orderID, confirmToken str
 	if sellSide && chain.FundingVia(req.Via) != chain.ViaExternal {
 		grade = auth.GradeSignature
 	}
-	if err := s.Confirm.Consume(confirmToken, actorID, Digest("accept", o.ID), grade); err != nil {
+	if err := s.Confirm.Consume(ctx, confirmToken, actorID, Digest("accept", o.ID), grade); err != nil {
 		return nil, err
 	}
 

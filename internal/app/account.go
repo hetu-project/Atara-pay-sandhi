@@ -161,7 +161,7 @@ func (s *Service) SaveAllowance(ctx context.Context, ownerID, confirmToken strin
 	if cycle != "monthly" {
 		cycle = "weekly"
 	}
-	if err := s.Confirm.Consume(confirmToken, ownerID,
+	if err := s.Confirm.Consume(ctx, confirmToken, ownerID,
 		Digest("allowance", req.Spender, per.String(), capv.String()), auth.GradeSignature); err != nil {
 		return nil, err
 	}

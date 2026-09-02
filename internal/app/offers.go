@@ -78,14 +78,14 @@ func (s *Service) CreateOffer(ctx context.Context, makerID, confirmToken string,
 	// 买单不锁币：法币腿走银行，平台不代收法币，所以只是一句承诺。
 	lockTx := ""
 	if req.Side == "sell" {
-		if err := s.Confirm.Consume(confirmToken, makerID,
+		if err := s.Confirm.Consume(ctx, confirmToken, makerID,
 			Digest("offer", req.Asset, qty.String()), auth.GradeSignature); err != nil {
 			return nil, err
 		}
 		if err := s.requireOnChain(ctx, maker.Address, req.Asset, qty); err != nil {
 			return nil, err
 		}
-	} else if err := s.Confirm.Consume(confirmToken, makerID,
+	} else if err := s.Confirm.Consume(ctx, confirmToken, makerID,
 		Digest("offer", req.Asset, qty.String()), auth.GradeCommit); err != nil {
 		return nil, err
 	}
