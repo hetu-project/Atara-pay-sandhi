@@ -105,18 +105,3 @@ OTC       GET /offers → POST /orders/match（先撮合，给 3 个候选）
   Atara 钱包写进账户合约策略。
 - **演示时长**：`ATARA_DEMO_TIMING=true`（默认）状态机走秒级；
   `false` 换真实口径（30min / 4h / 2h / 14d）。
-
-## 与设计文档的偏差
-
-原 spec 定的是 PostgreSQL + sqlc + goose 与托管账本。实际：
-
-1. **SQLite（modernc，纯 Go）取代 Postgres** —— 本机没有 Docker 也没有 PG，目标是 `go run` 直接起。
-   分层与 SQL 结构不变，只换方言；`schema.sql` 启动时执行。
-2. **金额底层用 `decimal` 而非 int64 最小单位** —— 18 位精度下 int64 最多表示 9.2 ETH，
-   种子数据里就有 3.6 ETH。
-3. **托管账本整体删除** —— 前端在 `Make the account non-custodial` 之后改成非托管，
-   `wallets` 表与 `ledger` 包随之下线，换成 `chain.Chain` 接口 + 链上观察日志。
-
-## 不在本期范围
-
-KYC / KYB、法币收款账户管理、History 页、二度关系、真实 WebAuthn 验签、真实 LLM、真实链。
