@@ -6,7 +6,9 @@ import (
 	"github.com/advaita/atara-pay/internal/app"
 	"github.com/advaita/atara-pay/internal/domain/order"
 	"github.com/advaita/atara-pay/internal/httpx"
+	"github.com/advaita/atara-pay/internal/store"
 	"github.com/go-chi/chi/v5"
+	"github.com/shopspring/decimal"
 )
 
 func (h *Handler) Parse(w http.ResponseWriter, r *http.Request) {
@@ -229,4 +231,30 @@ func (h *Handler) VerifyReceipt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w, h.toOrder(r.Context(), h.actorID(r), o, true))
+}
+
+// EligibleCounterparties 回答「这单能跟谁做」。前端的 Buy/Sell 面板默认 Any，
+// 选定对手方时列表只该显示真能吃下这单的人——摆着撮不动的人比不摆更糟。
+func (h *Handler) EligibleCounterparties(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	amount, err := decimal.NewFromString(q.Get("amount"))
+	if err != nil {
+		httpx.Error(w, httpx.Fail(http.StatusUnprocessableEntity, "BAD_AMOUNT", "amount",
+			"amount must be a decimal number"))
+		return
+	}
+	kind := q.Get("amount_kind")
+	if kind == "" {
+		kind = "coin"
+	}
+	peers, err := h.St.EligibleCounterparties(r.Context(), h.actorID(r),
+		q.Get("side"), q.Get("asset"), q.Get("fiat"), kind, amount)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if peers == nil {
+		peers = []store.EligiblePeer{}
+	}
+	ok(w, map[string]any{"counterparties": peers})
 }

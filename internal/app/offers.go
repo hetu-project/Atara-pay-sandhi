@@ -296,6 +296,10 @@ type MatchReq struct {
 	AmountKind string `json:"amount_kind"`
 	Asset      string `json:"asset"`
 	Fiat       string `json:"fiat"`
+	// CounterpartyID 空表示 Any，也就是原来的快捷交易。指定了就只在这个人的
+	// 挂单里撮合，撮不到就明确失败——用户点了「跟他交易」，成交对象却是别人，
+	// 是最坏的结果，所以绝不静默回退到 Any。
+	CounterpartyID string `json:"counterparty_id"`
 }
 
 type Candidate struct {
@@ -325,14 +329,20 @@ func (s *Service) Match(ctx context.Context, req MatchReq) (*MatchResp, error) {
 		wantSide = "buy"
 	}
 	all, err := s.St.Offers(ctx, store.OfferFilter{
-		Side: wantSide, Asset: req.Asset, Fiat: req.Fiat, Status: "active"})
+		Side: wantSide, Asset: req.Asset, Fiat: req.Fiat, Status: "active",
+		Maker: req.CounterpartyID})
 	if err != nil {
 		return nil, err
 	}
 	resp := &MatchResp{Scanned: len(all), Candidates: []Candidate{}}
 	if len(all) == 0 {
+		if req.CounterpartyID != "" {
+			resp.Violation = httpx.Fail(422, "NO_MATCH_WITH_COUNTERPARTY", "counterparty_id",
+				"that counterparty has no offer that can fill this order right now")
+			return resp, nil
+		}
 		resp.Violation = httpx.Fail(422, "NO_COUNTERPARTY", "",
-			fmt.Sprintf("No live offers on that side right now"))
+			"No live offers on that side right now")
 		return resp, nil
 	}
 	// 成绩最好的排前面——快捷交易默认走第一个，所以排序就是默认选择

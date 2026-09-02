@@ -60,6 +60,7 @@ func (h *Handler) Router() http.Handler {
 			r.Post("/parse", h.Parse)
 			r.Post("/quote", h.Quote)
 			r.Post("/match", h.Match)
+			r.Get("/eligible-counterparties", h.EligibleCounterparties)
 			r.Post("/", h.CreateOrder)
 			r.Get("/", h.ListOrders)
 			r.Route("/{id}", func(r chi.Router) {
