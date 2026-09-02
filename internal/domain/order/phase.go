@@ -45,7 +45,7 @@ func (o *Order) PhaseFor(viewerID string) (Phase, Viewer, bool) {
 	}
 	payer := o.fiatPayer()
 	switch o.State {
-	case S1, S4:
+	case S1:
 		return PhaseLock, ViewerAuto, true
 	case S3:
 		if viewerID == payer {
@@ -58,7 +58,9 @@ func (o *Order) PhaseFor(viewerID string) (Phase, Viewer, bool) {
 			return PhaseLock, ViewerAuto, true
 		}
 		return PhaseVerify, ViewerYou, true
-	case S5:
+	case S4:
+		// 回执已核过，正在放款。S4→S5 那条边总是同时置终态，
+		// 所以 s5 永远走不到这里——放款这一段能被观察到的就是 s4。
 		return PhaseRel, ViewerAuto, true
 	}
 	return "", "", false

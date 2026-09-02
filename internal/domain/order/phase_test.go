@@ -28,13 +28,15 @@ func TestPhaseFor(t *testing.T) {
 		{"s3 收方在等对方打款", mk(S3, "buy"), "maker", PhaseWait, ViewerThem},
 		{"s3v 付方等对方核验", mk(S3V, "buy"), "taker", PhaseLock, ViewerAuto},
 		{"s3v 收方该核验", mk(S3V, "buy"), "maker", PhaseVerify, ViewerYou},
-		{"s4 锁仓中（买）", mk(S4, "buy"), "taker", PhaseLock, ViewerAuto},
+		{"s4 回执已核，正在放款（买）", mk(S4, "buy"), "taker", PhaseRel, ViewerAuto},
 
 		// taker 卖币：maker 是法币付方，两侧对调
 		{"s3 卖方向：maker 该打款", mk(S3, "sell"), "maker", PhasePay, ViewerYou},
 		{"s3 卖方向：taker 在等", mk(S3, "sell"), "taker", PhaseWait, ViewerThem},
 		{"s3v 卖方向：taker 该核验", mk(S3V, "sell"), "taker", PhaseVerify, ViewerYou},
 		{"s3v 卖方向：maker 等核验", mk(S3V, "sell"), "maker", PhaseLock, ViewerAuto},
+		// s4 不按付方分支，两个方向都验一遍，防止以后被误改成有分支
+		{"s4 卖方向：回执已核，正在放款", mk(S4, "sell"), "maker", PhaseRel, ViewerAuto},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
