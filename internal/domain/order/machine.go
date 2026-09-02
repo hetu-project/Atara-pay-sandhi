@@ -55,9 +55,9 @@ var conditionalEdges = []edge{
 
 // OTC 成交的转移表。
 //
-//	match → s1 → s3 → s4 → s5 ✅
-//	  │           │
-//	  └ cancelled └ 超时 → expired ⚠️ 负向回写
+//	match → s1 → s3 → s3v → s4 → s5 ✅
+//	  │           │     │
+//	  └ cancelled └ 超时 └ 超时 → expired ⚠️ 负向回写
 //
 // OTC 的 s1 按方向分叉，这是非托管模型下最重要的一处不对称：
 //
@@ -72,7 +72,14 @@ var otcEdges = []edge{
 	{OTCTake, S1, EvFunded, both, S3, TermNone},
 	{OTCTake, S1, EvCancel, owner, Cancelled, TermCancelled}, // 还没入金就反悔
 
-	{OTCTake, S3, EvReceipt, both, S4, TermNone}, // 谁付法币谁传回执
+	{OTCTake, S3, EvReceipt, both, S3V, TermNone}, // 谁付法币谁传回执
+
+	// 核验是人工动作，只有收法币的一方能做。放行不等对方开口，
+	// 等的是回执本身被核过——这正是 OTC 不需要对方点确认的原因。
+	{OTCTake, S3V, EvVerify, both, S4, TermNone},
+	{OTCTake, S3V, EvDispute, both, Disputed, TermDisputed}, // 回执对不上
+	{OTCTake, S3V, EvTick, sys, Expired, TermExpired},       // 核验窗口过期
+
 	{OTCTake, S4, EvTick, sys, S5, TermCompleted},
 
 	{OTCTake, Match, EvCancel, owner, Cancelled, TermCancelled},

@@ -27,7 +27,10 @@ func TestTransitions(t *testing.T) {
 		{"OTC 确认成交", OTCTake, Match, EvAccept, ActorOwner, S1, TermNone},
 		{"OTC 买方向：绑定挂单锁仓", OTCTake, S1, EvBind, ActorSystem, S3, TermNone},
 		{"OTC 卖方向：入金确认走满", OTCTake, S1, EvFunded, ActorOwner, S3, TermNone},
-		{"OTC 上传回执", OTCTake, S3, EvReceipt, ActorOwner, S4, TermNone},
+		{"OTC 上传回执后待对方核验", OTCTake, S3, EvReceipt, ActorOwner, S3V, TermNone},
+		{"OTC 核验通过进入锁仓", OTCTake, S3V, EvVerify, ActorCounterparty, S4, TermNone},
+		{"OTC 核验不通过转异议", OTCTake, S3V, EvDispute, ActorCounterparty, Disputed, TermDisputed},
+		{"OTC 核验超时逾期", OTCTake, S3V, EvTick, ActorSystem, Expired, TermExpired},
 		{"OTC 核验放款", OTCTake, S4, EvTick, ActorSystem, S5, TermCompleted},
 		{"OTC 转账逾期", OTCTake, S3, EvTick, ActorSystem, Expired, TermExpired},
 	}
@@ -64,6 +67,9 @@ func TestTransitions(t *testing.T) {
 		{"OTC 不许靠 tick 跳过入金", OTCTake, S1, EvTick, ActorSystem, S3},
 		{"OTC 已进 s4 不能再撤", OTCTake, S4, EvCancel, ActorOwner, Cancelled},
 		{"OTC 的事件不能用在条件支付上", ConditionalTransfer, Locked, EvAccept, ActorOwner, S1},
+		{"OTC 回执上传后不能直接进 s4", OTCTake, S3, EvReceipt, ActorOwner, S4},
+		{"OTC 待核验时不能靠 tick 放款", OTCTake, S3V, EvTick, ActorSystem, S5},
+		{"OTC 待核验时不能撤单", OTCTake, S3V, EvCancel, ActorOwner, Cancelled},
 	}
 	for _, c := range illegal {
 		t.Run(c.name, func(t *testing.T) {

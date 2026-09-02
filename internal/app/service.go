@@ -112,6 +112,8 @@ func (s *Service) deadlineFor(o *order.Order) *time.Time {
 				return at(T.OTCTheirPay)
 			}
 			return at(T.OTCS3)
+		case order.S3V:
+			return at(T.OTCVerify)
 		case order.S4:
 			return at(T.OTCS4)
 		}

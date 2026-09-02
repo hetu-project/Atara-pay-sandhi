@@ -39,8 +39,12 @@ const (
 	Match State = "match"
 	S1    State = "s1"
 	S3    State = "s3"
-	S4    State = "s4"
-	S5    State = "s5"
+	// S3V 是回执已上传、等对方核验的中间态。
+	// V1 前端的放行依据是「核验对方的银行回执」，不是「等对方点确认」，
+	// 所以核验必须是一个显式的人工动作，不能由 tick 代劳。
+	S3V State = "s3v"
+	S4  State = "s4"
+	S5  State = "s5"
 )
 
 // 两种 kind 共用的终态状态
@@ -85,6 +89,7 @@ const (
 	EvFund        Event = "fund"
 	EvBind        Event = "bind" // 绑定挂单时已锁的仓位
 	EvReceipt     Event = "receipt"
+	EvVerify      Event = "verify" // 核验对方的法币回执
 )
 
 type Conditional struct {
