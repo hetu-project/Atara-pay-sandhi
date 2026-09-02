@@ -92,12 +92,18 @@ OTC 只有一条法币腿：买币的一方付法币，卖币的一方收法币�
 
 | state | 我的角色 | 条件 | phase | actor |
 |---|---|---|---|---|
-| `s1` / `s3` | 法币付方（买币） | 回执未上传 | `pay` | `you` |
-| `s3v` | 法币付方（买币） | 回执已上传，等对方核验 | `lock` | `auto` |
-| `s1` / `s3` | 法币收方（卖币） | 对方回执未到 | `wait` | `them` |
-| `s3v` | 法币收方（卖币） | 对方回执已到，`verified_at` 为空 | `verify` | `you` |
+| `s1` | 双方 | 币还在往托管里注资 | `lock` | `auto` |
+| `s3` | 法币付方 | 回执未上传 | `pay` | `you` |
+| `s3` | 法币收方 | 对方回执未到 | `wait` | `them` |
+| `s3v` | 法币付方 | 回执已上传，等对方核验 | `lock` | `auto` |
+| `s3v` | 法币收方 | 对方回执已到，`verified_at` 为空 | `verify` | `you` |
 | `s4` | 双方 | 托管锁仓中 | `lock` | `auto` |
-| `s4` → `s5` | 双方 | 放款中 | `rel` | `auto` |
+| `s5` | 双方 | 放款中 | `rel` | `auto` |
+
+**`s1` 为什么不是 `pay`。** 写实施计划时发现的：taker 卖币时 `s1` 是 taker
+往合约注资的阶段，**币还没锁进托管**。此时让法币付方（maker）看到 `pay`，
+等于在托管成立之前就催他打钱。所以 `s1` 归入 `lock`（正在锁仓，无人需动手），
+`pay` / `wait` 从 `s3` 才开始。前端 `lock` 的文案 "Locking into escrow" 正好吻合。
 
 终态（`s5` / `cancelled` / `expired` / `disputed`）不产出 phase，
 `phase` 为 `null`，前端按 `terminal` 字段渲染。
