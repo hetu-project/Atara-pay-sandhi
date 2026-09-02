@@ -36,11 +36,21 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 	var locks []listing
 
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		// pavHues 对齐前端 PAV_HUES：没有头像图的用户，前端按这组色相之一渲染头像底色。
+		// 种子用户挨个循环取色，纯粹为了让 demo 列表看起来色彩不单一。
+		pavHues := [...]int{221, 190, 266, 152, 36, 320}
+		hueIdx := 0
+		nextHue := func() int {
+			h := pavHues[hueIdx%len(pavHues)]
+			hueIdx++
+			return h
+		}
+
 		user := func(id, addr, name, kind, walletKind, login string) error {
 			_, err := tx.Exec(
-				`insert into users(id,address,display_name,email,kind,wallet_kind,login_method,created_at)
-				 values(?,?,?,?,?,?,?,?)`,
-				id, addr, name, "", kind, walletKind, login, now)
+				`insert into users(id,address,display_name,email,kind,wallet_kind,login_method,hue,created_at)
+				 values(?,?,?,?,?,?,?,?,?)`,
+				id, addr, name, "", kind, walletKind, login, nextHue(), now)
 			return err
 		}
 
@@ -53,6 +63,16 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 		}
 		for _, w := range [][2]string{{"USDT", "34500"}, {"USDC", "1200"}, {"BTC", "0.42"}, {"ETH", "3.6"}} {
 			credits = append(credits, seeded{demoID, DemoAddress, w[0], w[1]})
+		}
+
+		// ── 审核账号：role=reviewer，供 Task 9 的审核端点演示用。
+		// 审核是真人动作，不走 agent 共识，所以必须有这么一个能登录的角色。
+		if _, err := tx.Exec(
+			`insert into users(id,address,display_name,email,kind,wallet_kind,login_method,hue,role,created_at)
+			 values(?,?,?,?,?,?,?,?,?,?)`,
+			reviewerID, ReviewerAddress, "Reviewer", "reviewer@atara.example",
+			"person", "atara", "passkey", nextHue(), "reviewer", now); err != nil {
+			return err
 		}
 
 		// ── 额度：本人一份，三个 agent 各一份 ──
@@ -169,6 +189,11 @@ const (
 	// X-Atara-User 传它，或者传 "Demo" 也认。
 	DemoAddress = "TDemo8F42C1kQm2vL9xW3cHf7bN6tZaU5p"
 	DemoHandle  = DemoAddress
+
+	reviewerID = "user-reviewer"
+	// ReviewerAddress 是审核账号的地址；X-Atara-User 传它，或者传 "reviewer" 也认
+	// （落到 UserByHandle 的 display_name 兜底匹配，跟 Demo 是同一套路）。
+	ReviewerAddress = "TReviewer2C1kQm9wq4vLpR3dNf6bZaU8k5"
 )
 
 func (s *Store) DemoUserID() string { return demoID }

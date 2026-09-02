@@ -87,7 +87,9 @@ func (s *Service) Connect(ctx context.Context, method, address, email, name stri
 	}
 	u := &model.User{
 		ID: store.NewID(), Address: address, DisplayName: name, Email: email,
-		Kind: "person", WalletKind: walletKind, LoginMethod: method, CreatedAt: time.Now().UTC(),
+		Kind: "person", WalletKind: walletKind, LoginMethod: method,
+		// Role 必须显式给值：users.role 有 check 约束，插入空字符串会直接违反约束。
+		Role: "user", CreatedAt: time.Now().UTC(),
 	}
 	if err := s.St.Tx(ctx, func(tx *sql.Tx) error { return s.St.InsertUser(tx, u) }); err != nil {
 		return nil, false, err

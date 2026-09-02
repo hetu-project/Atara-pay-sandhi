@@ -20,6 +20,9 @@ type User struct {
 	Kind        string    `json:"kind"`        // person | firm | agent
 	WalletKind  string    `json:"wallet_kind"` // atara（账户合约策略） | ext（对支出合约 approve）
 	LoginMethod string    `json:"login_method"`
+	Hue         int       `json:"hue"`
+	AvatarURL   string    `json:"avatar_url"`
+	Role        string    `json:"role"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 

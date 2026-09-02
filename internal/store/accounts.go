@@ -11,7 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-const userCols = `id,address,display_name,email,kind,wallet_kind,login_method,created_at`
+const userCols = `id,address,display_name,email,kind,wallet_kind,login_method,hue,avatar_url,role,created_at`
 
 func (s *Store) User(ctx context.Context, id string) (*model.User, error) {
 	return scanUser(s.db.QueryRowContext(ctx, `select `+userCols+` from users where id=?`, id).Scan)
@@ -35,7 +35,7 @@ func scanUser(scan func(...any) error) (*model.User, error) {
 	var u model.User
 	var created string
 	if err := scan(&u.ID, &u.Address, &u.DisplayName, &u.Email, &u.Kind,
-		&u.WalletKind, &u.LoginMethod, &created); err != nil {
+		&u.WalletKind, &u.LoginMethod, &u.Hue, &u.AvatarURL, &u.Role, &created); err != nil {
 		return nil, err
 	}
 	u.CreatedAt = parseTS(created)
@@ -43,8 +43,9 @@ func scanUser(scan func(...any) error) (*model.User, error) {
 }
 
 func (s *Store) InsertUser(tx *sql.Tx, u *model.User) error {
-	_, err := tx.Exec(`insert into users(`+userCols+`) values(?,?,?,?,?,?,?,?)`,
-		u.ID, u.Address, u.DisplayName, u.Email, u.Kind, u.WalletKind, u.LoginMethod, ts(u.CreatedAt))
+	_, err := tx.Exec(`insert into users(`+userCols+`) values(?,?,?,?,?,?,?,?,?,?,?)`,
+		u.ID, u.Address, u.DisplayName, u.Email, u.Kind, u.WalletKind, u.LoginMethod,
+		u.Hue, u.AvatarURL, u.Role, ts(u.CreatedAt))
 	return err
 }
 

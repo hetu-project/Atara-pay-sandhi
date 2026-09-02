@@ -18,6 +18,11 @@ create table if not exists users (
   kind          text not null default 'person' check (kind in ('person','firm','agent')),
   wallet_kind   text not null default 'atara' check (wallet_kind in ('atara','ext')),
   login_method  text not null default 'passkey',  -- passkey | wallet | google | email
+  -- hue 为 0 表示前端按 id 哈希取色，与前端 PAV_HUES 的逻辑一致
+  hue           integer not null default 0,
+  avatar_url    text not null default '',
+  -- reviewer 能审 maker 申请。审核不是 agent 共识，必须有真人入口。
+  role          text not null default 'user' check (role in ('user','reviewer')),
   created_at    text not null
 );
 
@@ -193,3 +198,57 @@ create table if not exists uploads (
   size_bytes   integer not null,
   created_at   text not null
 );
+
+-- 收款方：非托管下链上转账由用户自己签，平台只记地址簿。
+create table if not exists payees (
+  id         text primary key,
+  owner_id   text not null references users(id),
+  label      text not null,
+  chain      text not null,
+  address    text not null,
+  created_at text not null,
+  unique (owner_id, chain, address)
+);
+
+-- 提现：记的是意图与合规材料，不代持资金。tx_hash 由用户签完回填。
+create table if not exists withdrawals (
+  id            text primary key,
+  owner_id      text not null references users(id),
+  payee_id      text not null references payees(id),
+  asset_code    text not null,
+  amount        text not null,
+  purpose       text not null,
+  doc_upload_id text not null default '',
+  tx_hash       text not null default '',
+  state         text not null default 'draft'
+                check (state in ('draft','submitted','broadcast','confirmed','failed')),
+  created_at    text not null,
+  updated_at    text not null
+);
+
+-- Maker 申请。九步 KYC 字段太碎且前端仍在改，整体存 JSON blob。
+create table if not exists maker_applications (
+  user_id       text primary key references users(id),
+  phase         text not null default 'kyc' check (phase in ('kyc','listing')),
+  kyc_done      integer not null default 0,
+  kyc_ok        integer not null default 0,
+  listing_done  integer not null default 0,
+  approved      integer not null default 0,
+  form_json     text not null default '{}',
+  reject_reason text not null default '',
+  submitted_at  text,
+  reviewed_at   text,
+  reviewer_id   text references users(id),
+  updated_at    text not null
+);
+
+-- 支付确认令牌。原先是进程内的 map，重启即丢；落库后重启不影响未过期的令牌。
+create table if not exists confirmations (
+  token       text primary key,
+  user_id     text not null references users(id),
+  digest      text not null,
+  grade       text not null,
+  expires_at  text not null,
+  consumed_at text
+);
+create index if not exists idx_confirmations_expiry on confirmations(expires_at);
