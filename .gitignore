@@ -4,4 +4,7 @@ atara.db
 atara.db-wal
 atara.db-shm
 .superpowers/
-docs/
+docs/contracts/lib/
+contracts/out/
+contracts/cache/
+contracts/broadcast/

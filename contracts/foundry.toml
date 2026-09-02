@@ -1,0 +1,14 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+solc = "0.8.24"
+optimizer = true
+optimizer_runs = 200
+# 合约里没有 unchecked 数学，也不引外部库——审计面越小越好
+bytecode_hash = "none"
+
+[fmt]
+line_length = 100
+tab_width = 4
