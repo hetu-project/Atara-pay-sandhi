@@ -16,11 +16,11 @@ func TestPhaseFor(t *testing.T) {
 	}
 
 	cases := []struct {
-		name        string
-		order       *Order
-		viewer      string
-		phase       Phase
-		actor       Viewer
+		name   string
+		order  *Order
+		viewer string
+		phase  Phase
+		actor  Viewer
 	}{
 		// taker 买币：taker 是法币付方
 		{"s1 双方都在等锁仓（买）", mk(S1, "buy"), "taker", PhaseLock, ViewerAuto},
