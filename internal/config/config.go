@@ -14,6 +14,9 @@ type Timings struct {
 	OTCS1       time.Duration // 对手方注资托管（真实 30m）
 	OTCS3       time.Duration // 你的法币转账窗口（真实 4h）
 	OTCTheirPay time.Duration // 卖方向：等对方打法币。到点是对方付款，不是你逾期
+	// OTCVerify 是对方核验你回执的窗口。演示口径下它比别的站长得多（90s 而非几秒）：
+	// 核验是这条链路上唯一必须由人做的动作，控制台要能切到对手方身份点它。
+	// 到点没人核时调度器会代种子商家核（见 tickOTC 的 S3V 分支），那是无人值守的兜底。
 	OTCVerify   time.Duration // 对方核验你的回执（真实 2h）
 	OTCS4       time.Duration // 平台核验回执（真实 2h）
 	Dispute     time.Duration // 凭证档的异议窗口（真实 72h）
@@ -24,7 +27,7 @@ type Timings struct {
 func demoTimings() Timings {
 	return Timings{
 		OTCMatch: 20 * time.Second, OTCBind: 2 * time.Second, OTCS1: 10 * time.Second, OTCS3: 24 * time.Second, OTCTheirPay: 10 * time.Second,
-		OTCVerify: 6 * time.Second,
+		OTCVerify: 90 * time.Second,
 		OTCS4:     4 * time.Second, Dispute: 15 * time.Second, Fallback: 60 * time.Second,
 		CondSettle: 5 * time.Second,
 	}

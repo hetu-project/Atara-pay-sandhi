@@ -87,6 +87,9 @@ check("同一张单在收方眼里该核验", f"{mv['phase']}/{mv['actor']}", "v
 # 那正是 V1 要甩掉的东西，所以这条断言是这条链路的要害。
 bad = call(f"/orders/{bid}/verify-receipt", {"ok": True})
 check("上传者不能核自己的回执", bad["error"]["code"], "NOT_YOUR_CALL")
+# 显式以对手方身份核验，不依赖调度器代种子商家核那一支——
+# 那支是无人值守的兜底，测真实端点比测兜底有意义。
+call(f"/orders/{bid}/verify-receipt", {"ok": True}, who="CrabWalk Trading")
 check("买方向走到终态", wait(bid, "s5")["terminal"], "completed")
 
 print("\n── OTC · taker 卖币（自己的币上链 → s1 走确认数）──")
