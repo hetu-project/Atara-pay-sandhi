@@ -1,6 +1,7 @@
 package api
 
 import (
+	"github.com/advaita/atara-pay/internal/domain/order"
 	"net/http"
 
 	"github.com/advaita/atara-pay/internal/httpx"
@@ -20,10 +21,21 @@ func (h *Handler) Threads(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Thread(w http.ResponseWriter, r *http.Request) {
-	out, err := h.Svc.Thread(r.Context(), h.actorID(r), chi.URLParam(r, "peer"))
+	me := h.actorID(r)
+	out, err := h.Svc.Thread(r.Context(), me, chi.URLParam(r, "peer"))
 	if err != nil {
 		httpx.Error(w, err)
 		return
+	}
+	// app 层回的是领域结构体，裸序列化出去是 ID/Amount/Kind 这样的驼峰，
+	// 而且没有 phase/actor/rail——和 /orders 完全不是一个形状。
+	// 同一种东西在两个端点上两种形状，前端就得写两套类型，迟早出错。
+	if os, isOrders := out["orders"].([]*order.Order); isOrders {
+		js := make([]orderJSON, 0, len(os))
+		for _, o := range os {
+			js = append(js, h.toOrder(r.Context(), me, o, false))
+		}
+		out["orders"] = js
 	}
 	ok(w, out)
 }
