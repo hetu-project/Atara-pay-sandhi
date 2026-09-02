@@ -17,11 +17,11 @@ type Timings struct {
 	// OTCVerify 是对方核验你回执的窗口。演示口径下它比别的站长得多（90s 而非几秒）：
 	// 核验是这条链路上唯一必须由人做的动作，控制台要能切到对手方身份点它。
 	// 到点没人核时调度器会代种子商家核（见 tickOTC 的 S3V 分支），那是无人值守的兜底。
-	OTCVerify   time.Duration // 对方核验你的回执（真实 2h）
-	OTCS4       time.Duration // 平台核验回执（真实 2h）
-	Dispute     time.Duration // 凭证档的异议窗口（真实 72h）
-	Fallback    time.Duration // 超时兜底转人工（真实 14d）
-	CondSettle  time.Duration // 条件支付里对手方交付的模拟时长
+	OTCVerify  time.Duration // 对方核验你的回执（真实 2h）
+	OTCS4      time.Duration // 平台核验回执（真实 2h）
+	Dispute    time.Duration // 凭证档的异议窗口（真实 72h）
+	Fallback   time.Duration // 超时兜底转人工（真实 14d）
+	CondSettle time.Duration // 条件支付里对手方交付的模拟时长
 }
 
 func demoTimings() Timings {
@@ -50,6 +50,25 @@ type Config struct {
 	UploadDir   string
 	CORSOrigins string
 	T           Timings
+
+	// ChainImpl 选链实现：mock | evm。
+	// evm 需要下面这一组配得完整，缺一个就在启动时炸——
+	// 配错链参数比不配更危险，不能让它悄悄退回 mock 继续跑。
+	ChainImpl string
+	Chain     ChainConfig
+}
+
+// ChainConfig 是真实链的接入参数。
+type ChainConfig struct {
+	RPCURL string
+	Escrow string
+	// SignerKey 是 Demo 里唯一的私钥。绝不写进代码或提交进仓库——
+	// 只从环境变量读，本地开发放 .env（已在 .gitignore 里）。
+	SignerKey    string
+	USDT         string
+	USDC         string
+	Network      string
+	ExplorerBase string
 }
 
 func Load() Config {
@@ -60,6 +79,16 @@ func Load() Config {
 		DemoTiming:  envBool("ATARA_DEMO_TIMING", true),
 		UploadDir:   env("ATARA_UPLOAD_DIR", "./var/uploads"),
 		CORSOrigins: env("ATARA_CORS_ORIGINS", "*"),
+		ChainImpl:   env("ATARA_CHAIN_IMPL", "mock"),
+		Chain: ChainConfig{
+			RPCURL:       env("ATARA_RPC_URL", "http://127.0.0.1:8545"),
+			Escrow:       env("ATARA_ESCROW_ADDR", ""),
+			SignerKey:    env("ATARA_SIGNER_KEY", ""),
+			USDT:         env("ATARA_TOKEN_USDT", ""),
+			USDC:         env("ATARA_TOKEN_USDC", ""),
+			Network:      env("ATARA_NETWORK", "BSC-TESTNET"),
+			ExplorerBase: env("ATARA_EXPLORER", "https://testnet.bscscan.com"),
+		},
 	}
 	if c.DemoTiming {
 		c.T = demoTimings()

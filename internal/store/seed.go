@@ -14,6 +14,10 @@ import (
 type Funder interface {
 	Credit(ctx context.Context, address, asset string, amt decimal.Decimal) error
 	LockListing(ctx context.Context, offerID, owner, asset string, amt decimal.Decimal) (string, error)
+	// DeriveAddress 按当前链的地址格式派生地址。
+	// 种子里不能写死地址——TRON 的 T 开头和 EVM 的 0x 不通用，
+	// 写死哪一种，换到另一条链就会灌进一堆这条链不认的地址。
+	DeriveAddress(seed string) string
 }
 
 // Seed 灌演示数据，来自 console.html 的 CPS / ASSETS / CARDS / POOL。
@@ -55,14 +59,14 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 		}
 
 		// ── demo 用户。身份就是地址，邮箱只是通知渠道。 ──
-		if err := user(demoID, DemoAddress, "Demo", "person", "atara", "passkey"); err != nil {
+		if err := user(demoID, ch.DeriveAddress(demoSeed), "Demo", "person", "atara", "passkey"); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`update users set email=? where id=?`, "demo@atara.example", demoID); err != nil {
 			return err
 		}
 		for _, w := range [][2]string{{"USDT", "34500"}, {"USDC", "1200"}, {"BTC", "0.42"}, {"ETH", "3.6"}} {
-			credits = append(credits, seeded{demoID, DemoAddress, w[0], w[1]})
+			credits = append(credits, seeded{demoID, ch.DeriveAddress(demoSeed), w[0], w[1]})
 		}
 
 		// ── 审核账号：role=reviewer，供 Task 9 的审核端点演示用。
@@ -70,7 +74,7 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 		if _, err := tx.Exec(
 			`insert into users(id,address,display_name,email,kind,wallet_kind,login_method,hue,role,created_at)
 			 values(?,?,?,?,?,?,?,?,?,?)`,
-			reviewerID, ReviewerAddress, "Reviewer", "reviewer@atara.example",
+			reviewerID, ch.DeriveAddress(reviewerSeed), "Reviewer", "reviewer@atara.example",
 			"person", "atara", "passkey", nextHue(), "reviewer", now); err != nil {
 			return err
 		}
@@ -115,7 +119,7 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 			{"cp-pa", "TProcureAgent2mK8pXvL3wR9dHf4bN6tZa", "Procurement agent", "agent", "My agent"},
 		}
 		for _, c := range contacts {
-			if err := user(c.id, c.addr, c.name, c.kind, "atara", "passkey"); err != nil {
+			if err := user(c.id, ch.DeriveAddress(c.name), c.name, c.kind, "atara", "passkey"); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(
@@ -135,7 +139,7 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 		// ── 挂单池：10 条，对齐前端 POOL ──
 		for _, p := range pool {
 			mid := "mk-" + p.id
-			if err := user(mid, p.addr, p.name, "firm", "atara", "passkey"); err != nil {
+			if err := user(mid, ch.DeriveAddress(p.name), p.name, "firm", "atara", "passkey"); err != nil {
 				return err
 			}
 			docs, _ := json.Marshal(p.docs)
@@ -145,7 +149,7 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 				mid, p.peer, p.score, p.deals, p.disputes, p.fillRate, p.releaseSecs, string(docs)); err != nil {
 				return err
 			}
-			credits = append(credits, seeded{mid, p.addr, p.asset, p.reserve})
+			credits = append(credits, seeded{mid, ch.DeriveAddress(p.name), p.asset, p.reserve})
 			if _, err := tx.Exec(
 				`insert into offers(id,maker_id,side,asset_code,network,networks,fiat_code,
 					unit_price,qty,remaining_qty,min_lot,lock_tx,status,created_at,updated_at)
@@ -164,7 +168,7 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 			}
 			// 卖单挂出即锁币——锁进合约，所以留到事务外走链
 			if p.side == "sell" {
-				locks = append(locks, listing{p.id, p.addr, p.asset, p.qty})
+				locks = append(locks, listing{p.id, ch.DeriveAddress(p.name), p.asset, p.qty})
 			}
 		}
 		return nil
@@ -193,15 +197,19 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 
 const (
 	demoID = "user-demo"
-	// DemoAddress 是 demo 账户的地址。地址就是账户——
-	// X-Atara-User 传它，或者传 "Demo" 也认。
-	DemoAddress = "TDemo8F42C1kQm2vL9xW3cHf7bN6tZaU5p"
-	DemoHandle  = DemoAddress
+	// 地址在 Seed 里按当前链的格式派生，不写死——见 Funder.DeriveAddress。
+	// TRON 的 T 开头与 EVM 的 0x 不通用，写死哪一种，换链就会灌进一堆
+	// 这条链不认的地址。
+	demoSeed = "demo"
+	// DemoHandle 是不带 X-Atara-User 头时的缺省身份。
+	// 用显示名而不是地址：地址随链变，显示名不变（UserByHandle 有
+	// display_name 兜底匹配）。
+	DemoHandle = "Demo"
 
 	reviewerID = "user-reviewer"
 	// ReviewerAddress 是审核账号的地址；X-Atara-User 传它，或者传 "reviewer" 也认
 	// （落到 UserByHandle 的 display_name 兜底匹配，跟 Demo 是同一套路）。
-	ReviewerAddress = "TReviewer2C1kQm9wq4vLpR3dNf6bZaU8k5"
+	reviewerSeed = "reviewer"
 )
 
 func (s *Store) DemoUserID() string { return demoID }

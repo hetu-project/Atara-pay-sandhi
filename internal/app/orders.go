@@ -549,8 +549,12 @@ func (s *Service) tickOTC(ctx context.Context, o *order.Order) error {
 		return err
 
 	case order.S4:
-		_, err := s.advance(ctx, o.ID, order.EvTick, order.ActorSystem, order.S5,
-			"Verified and released · settlement complete", nil, nil, nil)
+		// 这一步的闸门是「回执被收款方核过」，不是风险评分——那是个确定性
+		// 检查，不是概率判断。所以给满分，理由里写清依据是什么。
+		_, err := s.advanceAuth(ctx, o.ID, order.EvTick, order.ActorSystem, order.S5,
+			"Verified and released · settlement complete", nil,
+			chain.ReleaseAuth{Score: 100, Rationale: "fiat receipt verified by the receiving side"},
+			nil, nil)
 		return err
 	}
 	return nil
@@ -595,9 +599,32 @@ func (s *Service) runReleaseConsensus(ctx context.Context, o *order.Order) error
 	if d.Outcome == agent.OutcomeHoldForReview {
 		to = order.AwaitingMe
 	}
-	_, err = s.advance(ctx, o.ID, order.EvReleaseVote, order.ActorAgent, to, d.Rationale,
-		map[string]string{"outcome": string(d.Outcome)}, nil, nil)
+	// 共识的评分是放行的链上闸门：合约要求它不低于部署时设定的 minScore。
+	// 拦下转人工时不会走到 Settle，评分传多少都不影响资金。
+	score := uint16(0)
+	if d.Outcome == agent.OutcomeRelease {
+		score = consensusScore(d.Votes)
+	}
+	_, err = s.advanceAuth(ctx, o.ID, order.EvReleaseVote, order.ActorAgent, to, d.Rationale,
+		map[string]string{"outcome": string(d.Outcome), "score": fmt.Sprint(score)},
+		chain.ReleaseAuth{Score: score, Rationale: d.Rationale}, nil, nil)
 	return err
+}
+
+// consensusScore 把投票折成 0-100 的分。
+// 放行共识的出口只有放行与拦下，所以这个分是「多少票赞成」的比例，
+// 不是风控模型的连续分——接真模型时这里换成模型输出。
+func consensusScore(votes []agent.Vote) uint16 {
+	if len(votes) == 0 {
+		return 0
+	}
+	passed := 0
+	for _, v := range votes {
+		if v.Verdict == "pass" {
+			passed++
+		}
+	}
+	return uint16(passed * 100 / len(votes))
 }
 
 func (s *Service) ReleaseConsensus(ctx context.Context, orderID string) (agent.Decision, error) {

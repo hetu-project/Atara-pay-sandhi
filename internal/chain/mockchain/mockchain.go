@@ -252,7 +252,8 @@ func (c *Chain) putPosition(ctx context.Context, orderID, offerID, owner, asset 
 	return err
 }
 
-func (c *Chain) Release(ctx context.Context, orderID, to string) (string, error) {
+// Release 的 auth 在 mock 里只记进日志——真实链实现会把它签成 EIP-712 证明。
+func (c *Chain) Release(ctx context.Context, orderID, to string, _ chain.ReleaseAuth) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	p, err := c.Position(ctx, orderID)
@@ -274,7 +275,7 @@ func (c *Chain) Release(ctx context.Context, orderID, to string) (string, error)
 	return tx, err
 }
 
-func (c *Chain) Refund(ctx context.Context, orderID string) (string, error) {
+func (c *Chain) Refund(ctx context.Context, orderID string, _ chain.ReleaseAuth) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	p, err := c.Position(ctx, orderID)
@@ -407,3 +408,18 @@ func dec(s string) decimal.Decimal {
 }
 func ts(t time.Time) string      { return t.UTC().Format(time.RFC3339Nano) }
 func parseTS(s string) time.Time { t, _ := time.Parse(time.RFC3339Nano, s); return t }
+
+// DeriveAddress 生成 TRON 风格的确定性地址。mock 链的地址格式沿用一期的选择。
+//
+// 用 SHA-256 而不是「乘 31 取模」那种手写散列：地址是唯一键，
+// 十几个种子名就能把弱散列撞出重复，撞了会在灌种子时炸在唯一约束上。
+func (c *Chain) DeriveAddress(seed string) string {
+	sum := sha256.Sum256([]byte("atara-mock|" + seed))
+	const abc = "abcdefghijkmnpqrstuvwxyz23456789"
+	out := make([]byte, 0, 34)
+	out = append(out, 'T')
+	for i := 0; i < 33; i++ {
+		out = append(out, abc[int(sum[i%len(sum)])%len(abc)])
+	}
+	return string(out)
+}

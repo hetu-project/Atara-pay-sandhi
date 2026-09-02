@@ -127,6 +127,15 @@ func (s *Service) advance(ctx context.Context, orderID string, ev order.Event, a
 	to order.State, reason string, payload map[string]string,
 	chainDo func(*order.Order) (settlement.Outcome, error),
 	extra func(*sql.Tx, *order.Order) error) (*order.Order, error) {
+	return s.advanceAuth(ctx, orderID, ev, actor, to, reason, payload, chain.ReleaseAuth{}, chainDo, extra)
+}
+
+// advanceAuth 与 advance 相同，但显式带上放行依据。
+// 只有真的会走到 completed 的两处需要它：条件支付的放行共识，与 OTC 的核验后放款。
+func (s *Service) advanceAuth(ctx context.Context, orderID string, ev order.Event, actor order.Actor,
+	to order.State, reason string, payload map[string]string, auth chain.ReleaseAuth,
+	chainDo func(*order.Order) (settlement.Outcome, error),
+	extra func(*sql.Tx, *order.Order) error) (*order.Order, error) {
 
 	o, err := s.St.Order(ctx, orderID)
 	if err != nil {
@@ -152,7 +161,7 @@ func (s *Service) advance(ctx context.Context, orderID string, ev order.Event, a
 		}
 	}
 	if term != order.TermNone && chainDo == nil {
-		if out, err = settlement.Settle(ctx, s.Ch, o, term); err != nil {
+		if out, err = settlement.Settle(ctx, s.Ch, o, term, auth); err != nil {
 			return nil, chainErr(err)
 		}
 	}

@@ -59,6 +59,11 @@ type Chain interface {
 	SpendingAddress() string
 	// ExplorerURL 给前端拼浏览器链接。
 	ExplorerURL(asset, address string) string
+	// DeriveAddress 按**这条链的地址格式**，为一个身份种子派生确定性地址。
+	//
+	// 地址格式是链的属性，不是平台的：TRON 是 base58 的 T 开头，EVM 是 0x 十六进制。
+	// 把它写死在上层，换链时种子和开户都会生成一堆这条链不认的地址。
+	DeriveAddress(seed string) string
 
 	// Balance 读链上余额。注意是"读"——平台没有权力改它。
 	Balance(ctx context.Context, address, asset string) (decimal.Decimal, error)
@@ -76,8 +81,12 @@ type Chain interface {
 
 	Position(ctx context.Context, orderID string) (*Position, error)
 	// Release 把仓位放给收款方；Refund 原路退回。两者都是合约动作。
-	Release(ctx context.Context, orderID, to string) (txHash string, err error)
-	Refund(ctx context.Context, orderID string) (txHash string, err error)
+	//
+	// auth 带的是放行依据。真实链实现要把它签成一份 EIP-712 证明再提交——
+	// 合约只认带证明的调用，没有「运营方直接放行」那条路。
+	// 签名留在链层内部：app 层不该拿到、也拿不到私钥。
+	Release(ctx context.Context, orderID, to string, auth ReleaseAuth) (txHash string, err error)
+	Refund(ctx context.Context, orderID string, auth ReleaseAuth) (txHash string, err error)
 
 	// LockListing / UnlockListing：挂出即锁币、下架即解锁。
 	LockListing(ctx context.Context, offerID, owner, asset string, amt decimal.Decimal) (txHash string, err error)
@@ -87,6 +96,17 @@ type Chain interface {
 	// 外部钱包是对支出合约的 approve——两种执行方式，同一个接口。
 	GrantAllowance(ctx context.Context, a AllowanceGrant) (txHash string, err error)
 	RevokeAllowance(ctx context.Context, allowanceID string) (txHash string, err error)
+}
+
+// ReleaseAuth 是放行/退款的依据，由共识产出。
+//
+// Score 是共识评分，合约要求它不低于部署时设定的 minScore。
+// 退款不看分数——条件没成立、超时、撤单与风险评分无关。
+type ReleaseAuth struct {
+	Score uint16
+	// Rationale 只进事件与日志，不进链上证明——摘要里放自由文本
+	// 会让证明变长且没有额外保证。
+	Rationale string
 }
 
 type AllowanceGrant struct {

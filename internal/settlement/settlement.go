@@ -34,14 +34,18 @@ type Outcome struct {
 //	cancelled → 合约原路退回，不回写违约
 //	expired   → 合约原路退回，负向回写违约
 //	disputed  → 什么都不做，资金留在合约里等裁决
-func Settle(ctx context.Context, ch chain.Chain, o *order.Order, term order.Terminal) (Outcome, error) {
+//
+// Settle 的 auth 是放行依据。它必须由调用方显式给出，不能在这里凭 term 猜——
+// 「评分决定放行」这件事一旦靠推断，就等于没有这道闸门。
+func Settle(ctx context.Context, ch chain.Chain, o *order.Order, term order.Terminal,
+	auth chain.ReleaseAuth) (Outcome, error) {
 	switch term {
 	case order.TermCompleted:
 		payee := payeeOf(o)
 		if payee == "" {
 			return Outcome{Action: "none"}, nil
 		}
-		tx, err := ch.Release(ctx, o.ID, payee)
+		tx, err := ch.Release(ctx, o.ID, payee, auth)
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -50,7 +54,7 @@ func Settle(ctx context.Context, ch chain.Chain, o *order.Order, term order.Term
 	case order.TermCancelled, order.TermExpired:
 		// 退回是合约的事。挂单锁的币退回挂单本身，不退给个人——
 		// 币还 backing 着那条挂单，归还的是可成交量。合约里这一层判断在 Refund。
-		tx, err := ch.Refund(ctx, o.ID)
+		tx, err := ch.Refund(ctx, o.ID, auth)
 		if err != nil {
 			return Outcome{}, err
 		}
