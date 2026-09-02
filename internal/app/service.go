@@ -311,6 +311,31 @@ func (s *Service) checkAllowance(ctx context.Context, ownerID, id string, amt mo
 			fmt.Sprintf("only $%s left in %s's %s window", left.Round(0), a.Spender, a.Cycle)).
 			With(&httpx.Remedy{Action: "request_approval", Label: "Send it for your approval instead"})
 	}
+
+	// 最后一道：链上策略说了算。
+	//
+	// 上面那几条查的是平台库里的记录。如果链上这份支配权已经被撤销或余量
+	// 不够，而平台仅凭自己的记录就放行，那「额度是签进链上的支配权」这句话
+	// 就是假的——链是权威，平台的记录只是缓存。
+	//
+	// 链上没有这份策略时（额度未上链，或用 mock 链）返回 nil，退回只看
+	// 平台侧记录——那种情况下平台记录就是唯一的事实，不必假装有链上依据。
+	st, err := s.Ch.AllowanceState(ctx, a.ID)
+	if err != nil {
+		return "", err
+	}
+	if st == nil {
+		return a.ID, nil
+	}
+	if !st.Live {
+		return "", httpx.Fail(http.StatusUnprocessableEntity, "ALLOWANCE_REVOKED", "allowance_id",
+			fmt.Sprintf("%s's allowance is not live on-chain", a.Spender))
+	}
+	if st.Available.IsPositive() && usd.GreaterThan(st.Available) {
+		return "", httpx.Fail(http.StatusUnprocessableEntity, "OVER_QUOTA", "amount",
+			fmt.Sprintf("only $%s left on-chain for %s", st.Available.Round(0), a.Spender)).
+			With(&httpx.Remedy{Action: "request_approval", Label: "Send it for your approval instead"})
+	}
 	return a.ID, nil
 }
 

@@ -96,6 +96,11 @@ type Chain interface {
 	// 外部钱包是对支出合约的 approve——两种执行方式，同一个接口。
 	GrantAllowance(ctx context.Context, a AllowanceGrant) (txHash string, err error)
 	RevokeAllowance(ctx context.Context, allowanceID string) (txHash string, err error)
+	// AllowanceState 读链上这份支配权此刻的状态。
+	//
+	// 它存在的意义是让**链上策略成为额度校验的权威**：只有平台库记着的
+	// 额度是装饰，链上撤了平台还放行就是假的非托管。
+	AllowanceState(ctx context.Context, allowanceID string) (*AllowanceState, error)
 }
 
 // ReleaseAuth 是放行/退款的依据，由共识产出。
@@ -107,6 +112,16 @@ type ReleaseAuth struct {
 	// Rationale 只进事件与日志，不进链上证明——摘要里放自由文本
 	// 会让证明变长且没有额外保证。
 	Rationale string
+}
+
+// AllowanceState 是链上支配权的实况。
+type AllowanceState struct {
+	// Live 为 false 表示已撤销、已过期，或链上根本没有这份策略。
+	Live bool
+	// Available 是此刻还能花多少（已把周期窗口滚动算进去）。
+	Available decimal.Decimal
+	// Used 是当前窗口已用。
+	Used decimal.Decimal
 }
 
 type AllowanceGrant struct {

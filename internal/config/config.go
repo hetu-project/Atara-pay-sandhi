@@ -62,6 +62,8 @@ type Config struct {
 type ChainConfig struct {
 	RPCURL string
 	Escrow string
+	// Spending 是支配权策略合约。空表示额度不上链。
+	Spending string
 	// SignerKey 是 Demo 里唯一的私钥。绝不写进代码或提交进仓库——
 	// 只从环境变量读，本地开发放 .env（已在 .gitignore 里）。
 	SignerKey    string
@@ -83,6 +85,7 @@ func Load() Config {
 		Chain: ChainConfig{
 			RPCURL:       env("ATARA_RPC_URL", "http://127.0.0.1:8545"),
 			Escrow:       env("ATARA_ESCROW_ADDR", ""),
+			Spending:     env("ATARA_SPENDING_ADDR", ""),
 			SignerKey:    env("ATARA_SIGNER_KEY", ""),
 			USDT:         env("ATARA_TOKEN_USDT", ""),
 			USDC:         env("ATARA_TOKEN_USDC", ""),

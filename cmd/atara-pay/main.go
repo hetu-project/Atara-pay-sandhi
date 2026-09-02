@@ -97,14 +97,18 @@ func openChain(ctx context.Context, cfg config.Config, st *store.Store) (chain.C
 			tokens["USDC"] = cc.USDC
 		}
 		ch, err := evmchain.New(ctx, evmchain.Config{
-			RPCURL: cc.RPCURL, EscrowAddr: cc.Escrow, SignerKeyHex: cc.SignerKey,
-			Tokens: tokens, Network: cc.Network, ExplorerBase: cc.ExplorerBase,
+			RPCURL: cc.RPCURL, EscrowAddr: cc.Escrow, SpendingAddr: cc.Spending,
+			SignerKeyHex: cc.SignerKey,
+			Tokens:       tokens, Network: cc.Network, ExplorerBase: cc.ExplorerBase,
 		})
 		if err != nil {
 			return nil, "", err
 		}
-		log.Printf("chain=evm · rpc=%s · escrow=%s · signer=%s · tokens=%v",
-			cc.RPCURL, cc.Escrow, ch.SignerAddress(), keysOf(tokens))
+		log.Printf("chain=evm · rpc=%s · escrow=%s · spending=%s · signer=%s · tokens=%v",
+			cc.RPCURL, cc.Escrow, orDash(cc.Spending), ch.SignerAddress(), keysOf(tokens))
+		if cc.Spending == "" {
+			log.Printf("ATARA_SPENDING_ADDR 未配：额度只有平台侧记录，链上没有真实授权。")
+		}
 		log.Printf("单签名方、阈值 1：这把私钥丢了，合约里的钱就能被放走。" +
 			"上真钱之前必须换成多签名方、阈值 >= 2。")
 		return ch, "evm(" + cc.Network + ")", nil
@@ -116,6 +120,13 @@ func openChain(ctx context.Context, cfg config.Config, st *store.Store) (chain.C
 		return ch, "mock", nil
 	}
 	return nil, "", fmt.Errorf("unknown ATARA_CHAIN_IMPL %q (want mock or evm)", cfg.ChainImpl)
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
 }
 
 func keysOf(m map[string]string) []string {

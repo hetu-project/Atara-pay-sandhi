@@ -38,3 +38,6 @@ chain-deploy:  ## 部署托管合约与两个测试稳定币，输出填进 .env
 
 chain-e2e:  ## 真链端到端：钱进合约、签证明、合约验签放款
 	@python3 scripts/chain-e2e.py
+
+chain-allowance:  ## 真链端到端：额度上链，链上撤销后平台立刻拒绝
+	@python3 scripts/allowance-e2e.py

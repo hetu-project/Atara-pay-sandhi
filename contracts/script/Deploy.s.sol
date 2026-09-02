@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {AtaraEscrow} from "../src/AtaraEscrow.sol";
+import {AtaraSpending} from "../src/AtaraSpending.sol";
 import {TestStablecoin} from "../src/TestStablecoin.sol";
 
 /**
@@ -33,7 +34,12 @@ contract Deploy is Script {
         signers[0] = signer;
         AtaraEscrow escrow = new AtaraEscrow(signers, 1, minScore);
 
+        // 支配权策略。签发额度的人就是出钱的人，所以这份合约不需要
+        // 签名方与阈值——msg.sender 就是授权。
+        AtaraSpending spending = new AtaraSpending();
+
         console.log("ATARA_ESCROW_ADDR=%s", address(escrow));
+        console.log("ATARA_SPENDING_ADDR=%s", address(spending));
         console.log("ATARA_SIGNER_ADDR=%s", signer);
         console.log("MIN_SCORE=%s", minScore);
 

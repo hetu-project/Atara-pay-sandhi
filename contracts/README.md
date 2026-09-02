@@ -1,11 +1,19 @@
-# AtaraEscrow
+# Atara 合约
 
-条件支付与 OTC 结算的托管合约。**未部署**，只编译与测试。
+两份合约。**未部署到公链**，只在本地测试链验证过。
+
+| | 作用 | 授权模型 |
+|---|---|---|
+| `AtaraEscrow` | 条件支付与 OTC 结算的托管 | **N-of-M 共识证明**——放行的判断权不在任何单一方手上 |
+| `AtaraSpending` | 支配权策略（额度） | **账户自己签**——签发额度的人就是出钱的人，`msg.sender` 即授权 |
+
+两者的授权模型刻意不同。托管里「该不该放行」是需要共识的判断，所以要阈值签名；
+额度里「我允许谁花我多少钱」只需要我本人同意，加签名证明是多余的仪式。
 
 ```bash
 export PATH="$HOME/.foundry/bin:$PATH"
 forge build
-forge test           # 112 个用例
+forge test           # 141 个用例
 forge coverage
 ```
 
@@ -157,5 +165,51 @@ digest := keccak256(append([]byte{0x19, 0x01}, domainSeparator..., structHash...
 重放防护已经在位。测试 `test_AttestationMarkedUsedAndCannotReplay` 断言的是
 标记确实被置位，没有假装能测出 `AttestationReplayed`。
 
-**未审计。** 112 个用例、98.3% 行覆盖、89.8% 分支覆盖，都不等于审计过。
-上真钱之前需要外部审计。
+**未审计。** 141 个用例，Escrow 行覆盖 98.3% / 分支 89.8%，
+Spending 行覆盖 100% / 分支 96.3%——都不等于审计过。上真钱之前需要外部审计。
+
+
+---
+
+# AtaraSpending
+
+## 为什么不能用 ERC-20 的 approve
+
+`approve` 是一个扁平数字：没有周期窗口、没有单笔上限、没有到期。
+产品说的「额度」是一份**可撤销、有周期、有单笔天花板**的支配权——
+那需要一份策略合约来记和执行。
+
+```solidity
+grant(id, spender, token, perPayment, windowCap, cycleSecs, expiresAt)  // 只有账户能调
+revoke(id)                                                              // 只有账户能撤
+spend(id, amount, to)                                                   // 只有 spender 能调
+available(id) / isLive(id) / policyOf(id)                               // 读
+```
+
+## 双闸门
+
+花钱要两个条件**同时**成立：
+
+1. **策略允许**（本合约执行）：live、未过期、单笔不超上限、窗口余量够
+2. **账户 approve 过本合约**（代币合约执行）
+
+任何一个撤掉，钱就花不出去。撤 approve 是账户随时能拉的紧急刹车，
+不必经过策略。测试 `test_RevertWhen_ApprovalRevoked` 钉住这条。
+
+## 两个容易写错的地方
+
+**窗口边界必须稳定。** 滚动时按整数倍前推（`windowStart += (elapsed / cycle) * cycle`），
+不是设成当前时间——后者会让每次花钱都把窗口往后推，等效于窗口永远不结束，
+周期限制就形同虚设。`test_WindowStartAdvancesInWholeCycles` 守这条。
+
+**改额度不清零窗口用量。** 否则「改一次额度」就成了绕过窗口的手段。
+只有换币种才重开窗口（那等于换了一份策略）。`test_RegrantKeepsWindowUsage` 守这条。
+
+## 链上是权威
+
+后端的 `checkAllowance` 在平台侧校验之后，还会读一次链上策略
+（`internal/chain/chain.go` 的 `AllowanceState`）。链上说撤了或余量不够，
+平台就不放行——**只有平台库记着的额度是装饰，链是权威，平台记录只是缓存**。
+
+`scripts/allowance-e2e.py` 验的就是这件事：绕过平台直接在链上 `revoke`，
+平台库里还写着 `live`，下一笔请求立刻拿到 `ALLOWANCE_REVOKED`。

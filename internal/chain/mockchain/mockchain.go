@@ -423,3 +423,34 @@ func (c *Chain) DeriveAddress(seed string) string {
 	}
 	return string(out)
 }
+
+// AllowanceState 读 mock 链上这份支配权的状态。
+//
+// mock 链不跟踪窗口用量（那需要一份支出流水），所以 Used 恒为 0、
+// Available 恒等于单笔上限。真实实现（evmchain）从策略合约读真实用量。
+// 这一处简化写在这里而不是藏起来：上层不该以为 mock 链能给出真实余量。
+func (c *Chain) AllowanceState(ctx context.Context, allowanceID string) (*chain.AllowanceState, error) {
+	var per, status string
+	var exp sql.NullString
+	err := c.db.QueryRowContext(ctx,
+		`select per_payment, status, expires_at from chain_allowances where id=?`,
+		allowanceID).Scan(&per, &status, &exp)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return &chain.AllowanceState{Live: false}, nil
+		}
+		return nil, err
+	}
+	live := status == "live"
+	if live && exp.Valid {
+		if t, e := time.Parse(time.RFC3339Nano, exp.String); e == nil && time.Now().After(t) {
+			live = false
+		}
+	}
+	amt, _ := decimal.NewFromString(per)
+	st := &chain.AllowanceState{Live: live, Used: decimal.Zero}
+	if live {
+		st.Available = amt
+	}
+	return st, nil
+}

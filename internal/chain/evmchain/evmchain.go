@@ -78,6 +78,32 @@ const escrowABI = `[
     {"name":"deadline","type":"uint256"}]}],"outputs":[{"name":"","type":"bytes32"}]}
 ]`
 
+// spendingABI 是支配权策略合约。签发额度的人就是出钱的人，
+// 所以这里不需要签名方与阈值——msg.sender 就是授权。
+const spendingABI = `[
+{"type":"function","name":"grant","inputs":[
+  {"name":"id","type":"bytes32"},{"name":"spender","type":"address"},
+  {"name":"token","type":"address"},{"name":"perPayment","type":"uint256"},
+  {"name":"windowCap","type":"uint256"},{"name":"cycleSecs","type":"uint64"},
+  {"name":"expiresAt","type":"uint64"}],"outputs":[]},
+{"type":"function","name":"revoke","inputs":[{"name":"id","type":"bytes32"}],"outputs":[]},
+{"type":"function","name":"spend","inputs":[
+  {"name":"id","type":"bytes32"},{"name":"amount","type":"uint256"},
+  {"name":"to","type":"address"}],"outputs":[]},
+{"type":"function","name":"available","stateMutability":"view","inputs":[
+  {"name":"id","type":"bytes32"}],"outputs":[{"name":"","type":"uint256"}]},
+{"type":"function","name":"isLive","stateMutability":"view","inputs":[
+  {"name":"id","type":"bytes32"}],"outputs":[{"name":"","type":"bool"}]},
+{"type":"function","name":"policyOf","stateMutability":"view","inputs":[
+  {"name":"id","type":"bytes32"}],"outputs":[
+  {"name":"","type":"tuple","components":[
+    {"name":"account","type":"address"},{"name":"spender","type":"address"},
+    {"name":"token","type":"address"},{"name":"perPayment","type":"uint256"},
+    {"name":"windowCap","type":"uint256"},{"name":"cycleSecs","type":"uint64"},
+    {"name":"expiresAt","type":"uint64"},{"name":"used","type":"uint256"},
+    {"name":"windowStart","type":"uint64"},{"name":"live","type":"bool"}]}]}
+]`
+
 // mintABI 只有测试币才有。真实的 USDT/USDC 没有公开 mint——
 // 所以 Credit 在真网上必然失败，那是对的。
 const mintABI = `[
@@ -109,6 +135,9 @@ type Config struct {
 	RPCURL string
 	// EscrowAddr 是已部署的 AtaraEscrow 地址。
 	EscrowAddr string
+	// SpendingAddr 是已部署的 AtaraSpending 地址。空表示额度不上链——
+	// 那时 GrantAllowance 返回空哈希，上层据此知道这份额度只有平台侧记录。
+	SpendingAddr string
 	// SignerKeyHex 是 Demo 里唯一的私钥：既签交易，也签放行证明。
 	// 生产环境这两件事应当分开，且证明的签名方要是多个独立主机。
 	SignerKeyHex string
@@ -123,14 +152,16 @@ type Config struct {
 }
 
 type Chain struct {
-	cfg       Config
-	cli       *ethclient.Client
-	escrow    common.Address
-	escrowABI abi.ABI
-	tokenABI  abi.ABI
-	key       *ecdsa.PrivateKey
-	signer    common.Address
-	chainID   *big.Int
+	cfg         Config
+	cli         *ethclient.Client
+	escrow      common.Address
+	spending    common.Address
+	escrowABI   abi.ABI
+	spendingABI abi.ABI
+	tokenABI    abi.ABI
+	key         *ecdsa.PrivateKey
+	signer      common.Address
+	chainID     *big.Int
 
 	// 代币精度从链上读一次就缓存——它不会变。
 	decMu    sync.RWMutex
@@ -176,6 +207,10 @@ func New(ctx context.Context, cfg Config) (*Chain, error) {
 	if err != nil {
 		return nil, err
 	}
+	sa, err := abi.JSON(strings.NewReader(spendingABI))
+	if err != nil {
+		return nil, err
+	}
 	if !common.IsHexAddress(cfg.EscrowAddr) {
 		return nil, fmt.Errorf("bad escrow address %q", cfg.EscrowAddr)
 	}
@@ -183,11 +218,18 @@ func New(ctx context.Context, cfg Config) (*Chain, error) {
 	c := &Chain{
 		cfg: cfg, cli: cli,
 		escrow:    common.HexToAddress(cfg.EscrowAddr),
-		escrowABI: ea, tokenABI: ta,
+		escrowABI: ea, spendingABI: sa, tokenABI: ta,
 		key: key, signer: crypto.PubkeyToAddress(key.PublicKey),
 		chainID:  cid,
 		decimals: map[string]uint8{},
 		watches:  map[string]*watch{},
+	}
+
+	if cfg.SpendingAddr != "" {
+		if !common.IsHexAddress(cfg.SpendingAddr) {
+			return nil, fmt.Errorf("bad spending address %q", cfg.SpendingAddr)
+		}
+		c.spending = common.HexToAddress(cfg.SpendingAddr)
 	}
 
 	// 启动即核对：合约在不在、阈值是不是 1（Demo 配置）
@@ -218,9 +260,12 @@ func (c *Chain) EscrowAddress(string) (string, string) {
 	return c.escrow.Hex(), c.cfg.Network
 }
 
-// SpendingAddress 在这一版与托管合约同一个：额度的链上执行还没做，
-// 返回托管地址至少不会让前端拼出一个不存在的链接。
-func (c *Chain) SpendingAddress() string { return c.escrow.Hex() }
+func (c *Chain) SpendingAddress() string {
+	if c.spending == (common.Address{}) {
+		return ""
+	}
+	return c.spending.Hex()
+}
 
 func (c *Chain) ExplorerURL(_, address string) string {
 	if c.cfg.ExplorerBase == "" || address == "" {
@@ -638,15 +683,142 @@ func (c *Chain) Credit(ctx context.Context, address, asset string, amt decimal.D
 
 // ── 额度：这一版不上链 ──
 
-// GrantAllowance 在这一版不产生链上动作。
+// GrantAllowance 把一份支配权写进策略合约。
 //
-// 额度的链上执行（账户合约策略 / 对支出合约的 approve）不在本次范围内，
-// 返回空哈希而不是假装成功——上层据此知道这份额度只有平台侧的记录。
-func (c *Chain) GrantAllowance(context.Context, chain.AllowanceGrant) (string, error) {
-	return "", nil
+// 授权模型：**签发的人就是出钱的人**，msg.sender 即授权，不需要签名证明。
+// 这与托管合约不同——那里放行的判断权不在任何单一方手上。
+//
+// 花钱要两个条件同时成立：策略允许（合约执行），且账户对策略合约做过
+// ERC-20 approve（代币合约执行）。所以这里顺手把 approve 也发出去，
+// 额度给多少就 approve 多少——不给无限额度，那会在合约被攻破时
+// 把整个余额暴露出去。
+func (c *Chain) GrantAllowance(ctx context.Context, a chain.AllowanceGrant) (string, error) {
+	if c.spending == (common.Address{}) {
+		// 没部策略合约：返回空哈希而不是假装成功，上层据此知道
+		// 这份额度只有平台侧记录。
+		return "", nil
+	}
+	asset := a.Asset
+	if asset == "" {
+		// 额度是按 USD 口径填的，没指定币种时落到这条链的主稳定币
+		asset = "USDT"
+	}
+	tok, err := c.tokenOf(asset)
+	if err != nil {
+		if errors.Is(err, ErrAssetUnsupported) {
+			return "", nil
+		}
+		return "", err
+	}
+	per, err := c.toWei(ctx, asset, a.PerPayment)
+	if err != nil {
+		return "", err
+	}
+	cap_, err := c.toWei(ctx, asset, a.WindowCap)
+	if err != nil {
+		return "", err
+	}
+	var expires uint64
+	if a.ExpiresAt != nil {
+		expires = uint64(a.ExpiresAt.Unix())
+	}
+
+	// spender 在产品里是一个名字（"Ops agent"），不是地址。派生一个
+	// 确定性地址给它——Demo 里 agent 没有自己的钱包。
+	spender := common.HexToAddress(c.DeriveAddress("spender|" + a.Spender))
+
+	// approve 给窗口总额，不给无限
+	if _, err := c.send(ctx, tok, c.tokenABI, "approve", c.spending, cap_); err != nil {
+		return "", fmt.Errorf("approve spending contract: %w", err)
+	}
+	h, err := c.send(ctx, c.spending, c.spendingABI, "grant",
+		idHash(a.ID), spender, tok, per, cap_, cycleSeconds(a.Cycle), expires)
+	if err != nil {
+		return "", fmt.Errorf("grant: %w", err)
+	}
+	return h.Hex(), nil
 }
 
-func (c *Chain) RevokeAllowance(context.Context, string) (string, error) { return "", nil }
+func (c *Chain) RevokeAllowance(ctx context.Context, allowanceID string) (string, error) {
+	if c.spending == (common.Address{}) {
+		return "", nil
+	}
+	h, err := c.send(ctx, c.spending, c.spendingABI, "revoke", idHash(allowanceID))
+	if err != nil {
+		return "", fmt.Errorf("revoke: %w", err)
+	}
+	return h.Hex(), nil
+}
+
+// policyRaw 与合约的 Policy 结构对齐。
+type policyRaw struct {
+	Account     common.Address
+	Spender     common.Address
+	Token       common.Address
+	PerPayment  *big.Int
+	WindowCap   *big.Int
+	CycleSecs   uint64
+	ExpiresAt   uint64
+	Used        *big.Int
+	WindowStart uint64
+	Live        bool
+}
+
+// AllowanceState 读链上这份支配权此刻的状态。
+//
+// 这是让链上策略成为权威的那一步：只有平台库记着的额度是装饰，
+// 链上撤了而平台还放行，就是假的非托管。
+func (c *Chain) AllowanceState(ctx context.Context, allowanceID string) (*chain.AllowanceState, error) {
+	if c.spending == (common.Address{}) {
+		return nil, nil // 额度没上链，上层退回只看平台侧记录
+	}
+	id := idHash(allowanceID)
+
+	vals, err := c.callViewAt(ctx, c.spending, c.spendingABI, "policyOf", id)
+	if err != nil {
+		return nil, err
+	}
+	p := *abi.ConvertType(vals[0], new(policyRaw)).(*policyRaw)
+	if p.Account == (common.Address{}) {
+		return &chain.AllowanceState{Live: false}, nil
+	}
+	asset := c.assetOf(p.Token)
+
+	lv, err := c.callViewAt(ctx, c.spending, c.spendingABI, "isLive", id)
+	if err != nil {
+		return nil, err
+	}
+	live, _ := lv[0].(bool)
+
+	av, err := c.callViewAt(ctx, c.spending, c.spendingABI, "available", id)
+	if err != nil {
+		return nil, err
+	}
+	availWei, ok := av[0].(*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("available: unexpected type %T", av[0])
+	}
+	avail, err := c.fromWei(ctx, asset, availWei)
+	if err != nil {
+		return nil, err
+	}
+	used, err := c.fromWei(ctx, asset, p.Used)
+	if err != nil {
+		return nil, err
+	}
+	return &chain.AllowanceState{Live: live, Available: avail, Used: used}, nil
+}
+
+// cycleSeconds 把产品里的周期名折算成秒。
+// 月按 30 天算：策略合约要的是一个固定长度的窗口，日历月长度不定。
+func cycleSeconds(cycle string) uint64 {
+	switch strings.ToLower(cycle) {
+	case "monthly":
+		return 30 * 24 * 60 * 60
+	default: // weekly
+		return 7 * 24 * 60 * 60
+	}
+}
 
 // ── 底层调用 ──
 

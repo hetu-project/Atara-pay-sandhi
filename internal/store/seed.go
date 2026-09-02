@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/advaita/atara-pay/internal/chain"
 	"github.com/shopspring/decimal"
+	"time"
 )
 
 // Funder 是种子数据往链上灌余额与锁仓的口子。
@@ -18,6 +20,12 @@ type Funder interface {
 	// 种子里不能写死地址——TRON 的 T 开头和 EVM 的 0x 不通用，
 	// 写死哪一种，换到另一条链就会灌进一堆这条链不认的地址。
 	DeriveAddress(seed string) string
+	// GrantAllowance 把额度签上链。
+	//
+	// 种子必须走这个口子，不能只往平台库写：额度校验的最后一道是查链上
+	// 策略，链上没有这份策略就会被判成已撤销。只写库不上链，
+	// 种子额度一条都用不了。
+	GrantAllowance(ctx context.Context, a chain.AllowanceGrant) (string, error)
 }
 
 // Seed 灌演示数据，来自 console.html 的 CPS / ASSETS / CARDS / POOL。
@@ -37,6 +45,9 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 	type seeded struct{ id, addr, asset, amount string }
 	var credits []seeded
 	type listing struct{ offerID, addr, asset, qty string }
+	// grant 是要签上链的额度。链上动作在事务之外——跟链之间没有分布式事务。
+	type grant struct{ id, spender, cycle, per, cap_, exp string }
+	var grants []grant
 	var locks []listing
 
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
@@ -108,6 +119,11 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 				a.id, demoID, a.spender, a.kind, a.per, a.cap_, a.used, a.cycle,
 				exp, a.recipients, a.tpl, a.status, a.note); err != nil {
 				return err
+			}
+			// 状态是 live 的额度要真的签上链。额度校验的最后一道是查链上
+			// 策略——只往平台库写，种子额度一条都用不了。
+			if a.status == "live" {
+				grants = append(grants, grant{a.id, a.spender, a.cycle, a.per, a.cap_, a.exp})
 			}
 		}
 
@@ -181,6 +197,28 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 	for _, c := range credits {
 		if err := ch.Credit(ctx, c.addr, c.asset, dec(c.amount)); err != nil {
 			return err
+		}
+	}
+	for _, g := range grants {
+		ag := chain.AllowanceGrant{
+			ID: g.id, Account: ch.DeriveAddress(demoSeed), WalletKind: "atara",
+			Spender: g.spender, Asset: "USDT",
+			PerPayment: dec(g.per), WindowCap: dec(g.cap_), Cycle: g.cycle,
+		}
+		if g.exp != "" {
+			if t, e := time.Parse(time.RFC3339, g.exp); e == nil {
+				ag.ExpiresAt = &t
+			}
+		}
+		txh, err := ch.GrantAllowance(ctx, ag)
+		if err != nil {
+			return err
+		}
+		if txh != "" {
+			if _, err := s.db.ExecContext(ctx,
+				`update allowances set chain_tx=? where id=?`, txh, g.id); err != nil {
+				return err
+			}
 		}
 	}
 	for _, l := range locks {
