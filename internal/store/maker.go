@@ -158,3 +158,14 @@ func (s *Store) PendingMakerApps(ctx context.Context) ([]MakerApp, error) {
 	}
 	return out, rows.Err()
 }
+
+// MakerApproved 是挂单的闸门：两段审核都过了才算。
+//
+// 查不到申请、只提交未审、只审过身份，一律不放行。撤回审批后立刻关门——
+// 这就是为什么它每次都查库而不缓存。
+func (s *Store) MakerApproved(ctx context.Context, userID string) bool {
+	var approved bool
+	err := s.db.QueryRowContext(ctx,
+		`select approved from maker_applications where user_id=?`, userID).Scan(&approved)
+	return err == nil && approved
+}

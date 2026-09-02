@@ -74,6 +74,12 @@ func (s *Service) CreateOffer(ctx context.Context, makerID, confirmToken string,
 	if err != nil {
 		return nil, httpx.NotFound("user")
 	}
+	// 做市准入的闸门。两段审核都过了才能挂单——只在前端隐藏按钮拦不住 curl，
+	// 而挂卖单会真的上链锁币，让未核验身份的人做这件事是不能接受的。
+	if !s.St.MakerApproved(ctx, makerID) {
+		return nil, httpx.Fail(http.StatusForbidden, "MAKER_NOT_APPROVED", "",
+			"your maker application has not cleared yet — submit it under Discover and wait for review")
+	}
 	// 卖单锁的是要交割的币——挂出即锁币，锁进合约，不是锁在平台。
 	// 买单不锁币：法币腿走银行，平台不代收法币，所以只是一句承诺。
 	lockTx := ""

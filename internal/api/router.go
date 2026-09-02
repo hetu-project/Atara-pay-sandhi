@@ -50,6 +50,7 @@ func (h *Handler) Router() http.Handler {
 		})
 		r.Get("/withdrawals", h.Withdrawals)
 		r.Post("/withdrawals", h.CreateWithdrawal)
+		r.Post("/withdrawals/{id}/broadcast", h.BroadcastWithdrawal)
 
 		// Maker 申请：两段提交，审核是真人动作
 		r.Get("/maker/application", h.MakerApplication)

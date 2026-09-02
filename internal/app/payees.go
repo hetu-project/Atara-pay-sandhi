@@ -103,3 +103,37 @@ func (s *Service) CreateWithdrawal(ctx context.Context, ownerID, confirmToken st
 	}
 	return &w, nil
 }
+
+// BroadcastWithdrawal 回填用户自己签出来的那笔链上转账。
+//
+// 非托管下平台不代发，所以这一步是「我签完了，哈希在这」——协议记下它，
+// 提现才从 submitted 走到 broadcast。没有这一步，提现会永久停在 submitted。
+func (s *Service) BroadcastWithdrawal(ctx context.Context, ownerID, id, txHash string) (*store.Withdrawal, error) {
+	if strings.TrimSpace(txHash) == "" {
+		return nil, httpx.Fail(http.StatusUnprocessableEntity, "TX_REQUIRED", "tx_hash",
+			"paste the transaction hash you signed — the protocol does not broadcast for you")
+	}
+	ws, err := s.St.Withdrawals(ctx, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	var found *store.Withdrawal
+	for i := range ws {
+		if ws[i].ID == id {
+			found = &ws[i]
+			break
+		}
+	}
+	if found == nil {
+		return nil, httpx.NotFound("withdrawal")
+	}
+	if found.State != "submitted" {
+		return nil, httpx.Fail(http.StatusConflict, "NOT_SUBMITTED", "",
+			"this withdrawal is at "+found.State+", not waiting on a transaction")
+	}
+	if err := s.St.SetWithdrawalTx(ctx, ownerID, id, txHash, "broadcast"); err != nil {
+		return nil, err
+	}
+	found.TxHash, found.State = txHash, "broadcast"
+	return found, nil
+}

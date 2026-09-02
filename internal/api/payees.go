@@ -63,3 +63,21 @@ func (h *Handler) CreateWithdrawal(w http.ResponseWriter, r *http.Request) {
 	}
 	ok(w, wd)
 }
+
+// BroadcastWithdrawal 收下用户自己签出来的交易哈希。
+// 平台不代发——这一步是「我签完了」，不是「你帮我发」。
+func (h *Handler) BroadcastWithdrawal(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TxHash string `json:"tx_hash"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	wd, err := h.Svc.BroadcastWithdrawal(r.Context(), h.actorID(r), chi.URLParam(r, "id"), req.TxHash)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, wd)
+}

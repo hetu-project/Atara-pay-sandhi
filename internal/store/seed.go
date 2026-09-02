@@ -154,6 +154,14 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 				p.price, p.qty, p.qty, p.minLot, now, now); err != nil {
 				return err
 			}
+			// 种子做市方视为已过两段审核。它们有活跃挂单，没有审批记录就不自洽——
+			// 而且装上闸门后它们连新挂单都发不出来。
+			if _, err := tx.Exec(
+				`insert or ignore into maker_applications
+				   (user_id,phase,kyc_done,kyc_ok,listing_done,approved,form_json,updated_at)
+				 values(?,'listing',1,1,1,1,'{"seeded":true}',?)`, mid, now); err != nil {
+				return err
+			}
 			// 卖单挂出即锁币——锁进合约，所以留到事务外走链
 			if p.side == "sell" {
 				locks = append(locks, listing{p.id, p.addr, p.asset, p.qty})
