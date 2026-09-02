@@ -38,6 +38,15 @@ func (h *Handler) Router() http.Handler {
 		r.Post("/uploads", h.Upload)
 		r.Get("/uploads/*", h.ServeUpload)
 
+		// 收款方与提现：链上转账用户自己签，平台记地址簿与合规材料
+		r.Route("/payees", func(r chi.Router) {
+			r.Get("/", h.Payees)
+			r.Post("/", h.AddPayee)
+			r.Delete("/{id}", h.DeletePayee)
+		})
+		r.Get("/withdrawals", h.Withdrawals)
+		r.Post("/withdrawals", h.CreateWithdrawal)
+
 		// 额度：不是卡，是签进链上的支配权
 		r.Route("/allowances", func(r chi.Router) {
 			r.Get("/", h.Allowances)
