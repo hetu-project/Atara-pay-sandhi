@@ -1,0 +1,43 @@
+# systemd 单元。放到 /etc/systemd/system/atara-pay.service
+#
+#   systemctl daemon-reload
+#   systemctl enable --now atara-pay
+#   journalctl -u atara-pay -f
+
+[Unit]
+Description=Atara settlement backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atara
+Group=atara
+WorkingDirectory=/srv/atara
+
+# 私钥在这个文件里——权限必须是 0600，属主是 atara
+EnvironmentFile=/srv/atara/.env
+
+# 只监听回环：公网入口只有 nginx 一个
+Environment=ATARA_HTTP_ADDR=127.0.0.1:8080
+Environment=ATARA_DB_PATH=/srv/atara/data/atara.db
+Environment=ATARA_UPLOAD_DIR=/srv/atara/data/uploads
+# 同源部署不需要 CORS。留空比留 * 安全：万一哪天后端被直接暴露，
+# 至少浏览器这一侧不会替攻击者放行。
+Environment=ATARA_CORS_ORIGINS=
+# 生产用真实时长（4 小时付款窗口），不是演示的秒级
+Environment=ATARA_DEMO_TIMING=false
+
+ExecStart=/srv/atara/bin/atara-pay
+Restart=always
+RestartSec=3
+
+# 收紧权限：只有数据目录可写
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/atara/data
+
+[Install]
+WantedBy=multi-user.target
