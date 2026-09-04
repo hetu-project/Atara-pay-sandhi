@@ -99,14 +99,63 @@ chown -R atara:atara /srv/atara
 ```bash
 cp deploy/atara-pay.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now atara-pay
+journalctl -u atara-pay -n 20 --no-pager        # 确认起来了
+```
 
-cp deploy/nginx.conf /etc/nginx/sites-available/atara
-ln -s /etc/nginx/sites-available/atara /etc/nginx/sites-enabled/
-htpasswd -c /etc/nginx/.htpasswd atara      # 设访问密码
+nginx 有两份配置，按有没有域名选一份：
+
+| 文件 | 用在什么时候 | 访问地址 |
+|---|---|---|
+| `nginx-http-ip.conf` | 裸 IP + 端口，没有 TLS | `http://<IP>:8090` |
+| `nginx-domain.conf` | 有域名，配合 certbot | `https://你的域名` |
+
+```bash
+cp deploy/nginx-http-ip.conf /etc/nginx/sites-available/atara   # 或 nginx-domain.conf
+ln -sf /etc/nginx/sites-available/atara /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
 ```
 
-证书用 certbot：`certbot --nginx -d atara.example.com`。
+访问控制已按需求关掉，不需要 `htpasswd`。
+
+### 上 HTTPS：不只是安全问题
+
+**Privy 的托管钱包只能在安全上下文里跑。** 明文 HTTP（localhost 除外）下
+它会在初始化时抛 `Embedded wallet is only available over HTTPS`，异常从
+PrivyProvider 里出来，整棵 React 树跟着挂——线上表现就是整屏全黑。
+
+前端因此有一条按 `isSecureContext` 的降级分支：不开托管钱包，Twitter 登录
+不显示，Google 登录的地址改由后端按邮箱派生。能用，但不等价。所以 HTTPS
+不是锦上添花，是这个登录方案的前提。
+
+**有域名**（域名先加一条 A 记录指向服务器 IP，`dig +short 你的域名` 能解析出来）：
+
+```bash
+# nginx-domain.conf 里的 server_name 改成你的域名，装好并 reload 之后
+certbot --nginx -d atara.example.com
+```
+
+`nginx-domain.conf` 只监听 80，443 块、证书路径和跳转由 certbot 自己加进去。
+不要手写 443：证书还没签出来时 `ssl_certificate` 指向的文件不存在，
+`nginx -t` 会直接失败，而 certbot 又需要 nginx 活着才能做校验。
+
+**没有域名**也行。Let's Encrypt 从 2026 年 1 月起支持 IP 地址证书：
+
+```bash
+snap install --classic certbot     # 发行版自带的版本会直接拒绝 IP 请求
+certbot --nginx --ip-address 62.146.236.64 --preferred-profile shortlived
+```
+
+代价是证书**只有 6 天**有效期（IP 证书强制短期；certbot 的定时器一天跑两次，
+够用，但别把它关了）。另外 **80 端口必须能从公网访问**，ACME 的 HTTP-01
+校验走那里——防火墙记得放行 80 和 443。
+
+### 换到 HTTPS 之后要记得两件事
+
+- 去 Privy 后台把新地址加进 allowed origins。不加的话登录弹窗照弹，但登不
+  进去，而且界面上没有任何提示，只有控制台一条 `frame-ancestors` 报错
+- Google 登录拿到的地址会变（从「后端按邮箱派生」换成「Privy 托管钱包」），
+  同一个 Google 账号会落到另一个账户上。演示数据无所谓，但别在 HTTP 和
+  HTTPS 两种模式之间来回切着演示同一条链路
 
 ## 四、选链
 
