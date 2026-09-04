@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -77,7 +80,11 @@ func (s *Service) Connect(ctx context.Context, method, address, email, name stri
 	if address == "" {
 		// 自托管钱包由 passkey 持有；Google / 邮箱路径也给一个地址——
 		// 身份就是地址，不给地址就等于没开户。
-		address = deriveAddress(method, email, name)
+		a, err := newAddress(method, email)
+		if err != nil {
+			return nil, false, err
+		}
+		address = a
 	}
 	if u, err := s.St.UserByAddress(ctx, address); err == nil {
 		return u, false, nil
@@ -97,20 +104,28 @@ func (s *Service) Connect(ctx context.Context, method, address, email, name stri
 	return u, true, nil
 }
 
-// deriveAddress 给 demo 造一个确定性地址：同一个邮箱每次进来都是同一个账户。
-// 真实实现里这来自 passkey 生成的密钥对或钱包连接。
-func deriveAddress(method, email, name string) string {
-	seed := method + "|" + email + "|" + name
-	h := 0
-	for _, c := range seed {
-		h = (h*31 + int(c)) % 999983
+// newAddress 造一个地址。
+//
+// 两种语义，不能混：
+//
+//	Create a wallet —— 每点一次就是一把新钥匙，必须随机。用确定性推导的话
+//	                   所有点「创建钱包」的人会落进同一个账户。
+//	Google / 邮箱   —— 同一个邮箱回来要落回同一个账户，所以按邮箱推导。
+//
+// 格式跟着链走：链是 EVM，地址就得是 0x + 20 字节，不能是 TRON 风格的 T 开头。
+// 真实实现里这来自 passkey 生成的密钥对，地址是公钥推出来的。
+func newAddress(method, email string) (string, error) {
+	if method == "google" || method == "email" {
+		if e := strings.TrimSpace(strings.ToLower(email)); e != "" {
+			h := sha256.Sum256([]byte("atara-account|" + e))
+			return "0x" + hex.EncodeToString(h[:20]), nil
+		}
 	}
-	const abc = "abcdefghijkmnpqrstuvwxyz23456789"
-	out := []byte("T")
-	for i := 0; i < 33; i++ {
-		out = append(out, abc[(h*(i+7)+i*13)%len(abc)])
+	b := make([]byte, 20)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
 	}
-	return string(out)
+	return "0x" + hex.EncodeToString(b), nil
 }
 
 func shortAddr(a string) string {
