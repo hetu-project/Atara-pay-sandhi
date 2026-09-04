@@ -41,15 +41,22 @@ chown -R atara:atara /srv/atara
 发行版自带的版本大概率太旧：`go.mod` 要 Go 1.25.6，vite 6 要 Node 18+。
 
 ```bash
-# Go
+# Go：机器上如果已经有 apt 装的 go，先卸掉。
+# 不卸也能装，但 apt 的 go 在 /usr/bin/go，PATH 里排在 /usr/local/go/bin 前面，
+# 装完 `go version` 还是老版本——这个坑很难自己看出来。
+which go && dpkg -S "$(readlink -f "$(which go)")"   # 报出包名就是 apt 装的
+apt remove -y golang-go golang-1.22-go && apt autoremove -y
+
 curl -fsSL https://go.dev/dl/go1.25.6.linux-amd64.tar.gz -o /tmp/go.tgz
 rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
-echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/go.sh && . /etc/profile.d/go.sh
+# 前置而不是追加，才压得住残留的老 go
+echo 'export PATH=/usr/local/go/bin:$PATH' > /etc/profile.d/go.sh && . /etc/profile.d/go.sh
+hash -r
 
 # Node 20
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt install -y nodejs
 
-go version && node -v      # 应为 go1.25.6+ 与 v20+
+go version && node -v      # 应为 go1.25.6 与 v20+
 ```
 
 ### 编译
