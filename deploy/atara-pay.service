@@ -15,8 +15,11 @@ User=atara
 Group=atara
 WorkingDirectory=/srv/atara
 
-# 私钥在这个文件里——权限必须是 0600，属主是 atara
-EnvironmentFile=/srv/atara/.env
+# 这一版跑 mock 链：不连 RPC、不签真交易、不需要任何私钥。
+# 整个 .env 因此不存在——签名私钥这一类风险直接从这台机器上消失了。
+# 换真链时才需要把 EnvironmentFile=/srv/atara/.env 加回来（0600，属主 atara）。
+Environment=ATARA_CHAIN_IMPL=mock
+Environment=ATARA_AGENT_IMPL=mock
 
 # 只监听回环：公网入口只有 nginx 一个
 Environment=ATARA_HTTP_ADDR=127.0.0.1:8080
@@ -25,8 +28,10 @@ Environment=ATARA_UPLOAD_DIR=/srv/atara/data/uploads
 # 同源部署不需要 CORS。留空比留 * 安全：万一哪天后端被直接暴露，
 # 至少浏览器这一侧不会替攻击者放行。
 Environment=ATARA_CORS_ORIGINS=
-# 生产用真实时长（4 小时付款窗口），不是演示的秒级
-Environment=ATARA_DEMO_TIMING=false
+# 秒级节奏。这台机器是放给人看流程的：真实时长下付款窗口 4 小时、
+# 平台核验 2 小时，一笔单子当着人的面根本走不完，屏幕上只会停在
+# 「等待中」。要按真实时长跑，把这里改成 false。
+Environment=ATARA_DEMO_TIMING=true
 
 ExecStart=/srv/atara/bin/atara-pay
 Restart=always

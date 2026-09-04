@@ -48,14 +48,18 @@ func New(ctx context.Context, db *sql.DB, t Timing) (*Chain, error) {
 
 // ── 地址 ──
 
+// 一律 EVM 风格。登录只剩 MetaMask，用户手里拿到的是 0x 地址——
+// 这时候把托管合约写成 TRON 的 T 开头，同一个界面上就有两套地址格式，
+// 读的人会以为自己转错了链。
+//
+// 之前这里还有一个 "0x5eC4a9Fb2d31AtaraEscrow40b8f21c9aD1"：里面嵌着
+// "AtaraEscrow" 几个字母，根本不是合法的十六进制，复制去区块浏览器查会是空的。
 var escrowAddr = map[string][2]string{
-	"USDT": {"TXk4mQeq9pVv7NcGL2sYAtaraEsc7hxKD", "TRON"},
-	"USDC": {"0x5eC4a9Fb2d31AtaraEscrow40b8f21c9aD1", "Ethereum"},
-	"BTC":  {"bc1qatara3escrow7xk2m9wq4", "Bitcoin"},
-	"ETH":  {"0x5eC4a9Fb2d31AtaraEscrow40b8f21c9aD1", "Ethereum"},
+	"USDT": {"0x5ec4a9fb2d31a7c3e0b8f21c9ad140b8f21c9ad1", "Ethereum"},
+	"USDC": {"0x7b1f3d92ce4408a5d61e0f27b3c8a9d40e5b2c16", "Polygon"},
 }
 
-const spendingAddr = "TSpeNd7aTaRa4kQm2vL9xW3cHf8bN6tZuK"
+const spendingAddr = "0x9d3a1c58e7b24f06a8c15d93f2e470b6c8a3d519"
 
 func (c *Chain) EscrowAddress(asset string) (string, string) {
 	if a, ok := escrowAddr[asset]; ok {
@@ -67,15 +71,10 @@ func (c *Chain) EscrowAddress(asset string) (string, string) {
 
 func (c *Chain) SpendingAddress() string { return spendingAddr }
 
+// ExplorerURL 在 mock 下返回空串：这条链不存在，给一个 etherscan 链接
+// 只会把人带到「查无此地址」的页面，比不给链接更让人怀疑是不是坏了。
 func (c *Chain) ExplorerURL(asset, address string) string {
-	_, net := c.EscrowAddress(asset)
-	switch net {
-	case "Ethereum":
-		return "https://etherscan.io/address/" + address
-	case "Bitcoin":
-		return "https://mempool.space/address/" + address
-	}
-	return "https://tronscan.org/#/address/" + address
+	return ""
 }
 
 // ── 余额 ──
@@ -409,19 +408,13 @@ func dec(s string) decimal.Decimal {
 func ts(t time.Time) string      { return t.UTC().Format(time.RFC3339Nano) }
 func parseTS(s string) time.Time { t, _ := time.Parse(time.RFC3339Nano, s); return t }
 
-// DeriveAddress 生成 TRON 风格的确定性地址。mock 链的地址格式沿用一期的选择。
+// DeriveAddress 生成确定性的 EVM 地址。
 //
 // 用 SHA-256 而不是「乘 31 取模」那种手写散列：地址是唯一键，
 // 十几个种子名就能把弱散列撞出重复，撞了会在灌种子时炸在唯一约束上。
 func (c *Chain) DeriveAddress(seed string) string {
 	sum := sha256.Sum256([]byte("atara-mock|" + seed))
-	const abc = "abcdefghijkmnpqrstuvwxyz23456789"
-	out := make([]byte, 0, 34)
-	out = append(out, 'T')
-	for i := 0; i < 33; i++ {
-		out = append(out, abc[int(sum[i%len(sum)])%len(abc)])
-	}
-	return string(out)
+	return "0x" + hex.EncodeToString(sum[:20])
 }
 
 // AllowanceState 读 mock 链上这份支配权的状态。

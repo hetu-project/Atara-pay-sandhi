@@ -6,7 +6,9 @@ func d(s string) decimal.Decimal { v, _ := decimal.NewFromString(s); return v }
 
 // 数字资产目录。scale 与网络对齐前端 console.html 的 ASSETS / NETS_OF。
 var cryptos = []Asset{
-	{Code: "USDT", Kind: KindCrypto, Name: "Tether USD", Symbol: "₮", Scale: 6, Networks: []string{"TRON", "ETH"}, USDRate: d("1")},
+	// 登录只剩 MetaMask，用户手里是 0x 地址；再给 USDT 挂一条 TRON，
+	// 同一张订单上就会出现 T 开头的网络名配 0x 的托管合约。这一版全走 EVM。
+	{Code: "USDT", Kind: KindCrypto, Name: "Tether USD", Symbol: "₮", Scale: 6, Networks: []string{"ETH", "POLYGON"}, USDRate: d("1")},
 	{Code: "USDC", Kind: KindCrypto, Name: "USD Coin", Symbol: "$", Scale: 6, Networks: []string{"POLYGON", "ETH"}, USDRate: d("1")},
 	{Code: "BTC", Kind: KindCrypto, Name: "Bitcoin", Symbol: "₿", Scale: 8, Networks: []string{"BTC"}, USDRate: d("93600")},
 	{Code: "ETH", Kind: KindCrypto, Name: "Ether", Symbol: "Ξ", Scale: 18, Networks: []string{"ETH"}, USDRate: d("3130")},

@@ -12,11 +12,12 @@
 | **Passkey** | 令牌的签发、绑定摘要、一次性、过期都是真的，**但没有 WebAuthn 验签** | 「动钱要签名」这道门形同虚设 |
 | **托管合约** | 单签名方、阈值 1 | 那把私钥丢了，合约里的钱能被放走 |
 
-在这三件事解决之前：
+这次上线选的是 mock 链（见「四、选链」），第三行因此不适用：没有合约、没有私钥，
+也就不可能有真钱在里面。**前两行照旧成立**——鉴权和验签都还是假的，所以：
 
 - nginx 里那道 Basic Auth **不要删**，它是唯一挡在外面的东西
 - 或者用 IP 白名单 / Cloudflare Access 换掉它，但必须有一层
-- 不要往托管合约里放真钱
+- 将来换真链时，第三行重新生效：不要往托管合约里放真钱
 
 ## 一、准备机器
 
@@ -49,10 +50,10 @@ scp -r dist/*      server:/srv/atara/dist/
 
 ## 三、配置
 
-```bash
-# .env 里有链的签名私钥
-install -m 0600 -o atara -g atara .env /srv/atara/.env
+这一版跑 mock 链，**没有 `.env`**——不连 RPC、不签真交易、不需要私钥，
+所有配置都在 systemd 单元的 `Environment=` 里。
 
+```bash
 cp deploy/atara-pay.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now atara-pay
 
@@ -66,19 +67,35 @@ nginx -t && systemctl reload nginx
 
 ## 四、选链
 
-`.env` 里的 `ATARA_CHAIN_IMPL` 决定托管走哪条路：
+这次上线选的是 **`mock`**（单元里 `ATARA_CHAIN_IMPL=mock` 已经写死）。
 
-- **`mock`** —— 没有真链，确认数按墙钟推算。演示业务流程用这个最省事，也没有私钥风险
-- **`evm`** —— 真链。服务器上要有可达的 RPC。**anvil 不适合**：它进程一重启链上状态全没了，而 SQLite 里还记着那些仓位，两边立刻对不上。要么用 BSC 测试网，要么用带持久化的节点
+`ATARA_CHAIN_IMPL` 决定托管走哪条路：
+
+- **`mock`** —— 没有真链，确认数按墙钟推算。业务链路和真链完全一样：挂单锁仓、
+  入托管、放款、退款、超时回写，一步都不少，差别只在链上那一笔是模拟的。
+  **不需要 RPC、不需要合约地址、不需要私钥**——整个 `.env` 连同私钥保管的问题一起消失
+- **`evm`** —— 真链。服务器上要有可达的 RPC，还要 `.env`（0600，属主 atara）装
+  `ATARA_SIGNER_KEY` 等。**anvil 不适合**：它进程一重启链上状态全没了，而 SQLite 里
+  还记着那些仓位，两边立刻对不上。要么用 BSC 测试网，要么用带持久化的节点
+
+mock 下地址全是 EVM 格式（`0x` + 20 字节），和只保留 MetaMask 的登录方式对得上；
+`ExplorerURL` 返回空串——这条链不存在，给一个 etherscan 链接只会把人点到
+「查无此地址」，比不给链接更让人怀疑是不是坏了。
 
 换链或删库时两边要一起重来，否则会出现「平台说这单锁着钱，链上查无此仓位」：
 
 ```bash
 systemctl stop atara-pay
 rm -f /srv/atara/data/atara.db*
-# 真链还要重新部署合约并更新 .env 里的地址
+# 换成真链才需要重新部署合约并更新 .env 里的地址
 systemctl start atara-pay
 ```
+
+### 节奏
+
+单元里是 `ATARA_DEMO_TIMING=true`，秒级推进。真实时长（`false`）下付款窗口 4 小时、
+平台核验 2 小时——当着人演示时一笔单子根本走不完，屏幕上只会停在「等待中」。
+要按真实时长跑再改回 `false`。
 
 ## 五、验证
 
