@@ -59,15 +59,15 @@ func (s *Service) EscrowedFor(ctx context.Context, userID, asset string) decimal
 
 // ── 登录 ──
 
-// Connect 是四种登录方式的落点。它们的差别只在拿到地址的路径：
-// 自建 passkey 钱包、连已有钱包、Google、邮箱——最后都是一个地址。
+// Connect 是各种登录方式的落点。它们的差别只在拿到地址的路径：
+// 自建 passkey 钱包、连已有钱包、Google / Twitter / 邮箱——最后都是一个地址。
 // wallet_kind 决定额度怎么签发：atara 写账户合约策略，ext 走 approve。
 func (s *Service) Connect(ctx context.Context, method, address, email, name string) (*model.User, bool, error) {
 	switch method {
-	case "passkey", "wallet", "google", "email":
+	case "passkey", "wallet", "google", "email", "twitter":
 	default:
 		return nil, false, httpx.Fail(http.StatusBadRequest, "UNKNOWN_METHOD", "method",
-			"connect with a passkey wallet, an existing wallet, Google, or an email")
+			"connect with a passkey wallet, an existing wallet, Google, Twitter, or an email")
 	}
 	walletKind := "atara"
 	if method == "wallet" {
