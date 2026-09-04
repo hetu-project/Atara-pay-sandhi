@@ -29,24 +29,51 @@ chown -R atara:atara /srv/atara
 
 ## 二、构建
 
-在开发机上构建，把产物拷过去——服务器上不装 Go 和 Node。
+代码在服务器上拉、在服务器上编。两个仓库分开，**分支不是默认的那个，务必确认**：
+
+| 仓库 | 分支 | 说明 |
+|---|---|---|
+| `hetu-project/Atara-pay-sandhi` | `v1-alignment` | 后端。这就是它的默认分支，clone 下来即是 |
+| `hetu-project/atara` | **`v1`** | 前端。默认分支 `main` **里没有 `app/` 目录**，整个控制台只在 `v1` 上 |
+
+### 工具链
+
+发行版自带的版本大概率太旧：`go.mod` 要 Go 1.25.6，vite 6 要 Node 18+。
 
 ```bash
-# 后端（交叉编译到 Linux）
-cd atara-pay
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/atara-pay ./cmd/atara-pay
-scp bin/atara-pay  server:/srv/atara/bin/
+# Go
+curl -fsSL https://go.dev/dl/go1.25.6.linux-amd64.tar.gz -o /tmp/go.tgz
+rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/go.sh && . /etc/profile.d/go.sh
 
-# 前端
-cd advaita-web/app
-npm ci && npm run build
-scp -r dist/*      server:/srv/atara/dist/
+# Node 20
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt install -y nodejs
+
+go version && node -v      # 应为 go1.25.6+ 与 v20+
 ```
 
-`CGO_ENABLED=0` 能成立是因为 SQLite 驱动是纯 Go 的（modernc），产物是静态二进制，不依赖服务器上的任何库。
+### 编译
+
+```bash
+# 后端 → 静态二进制
+cd ~/src/Atara-pay-sandhi && git pull
+CGO_ENABLED=0 go build -o /srv/atara/bin/atara-pay ./cmd/atara-pay
+
+# 前端 → 静态文件
+cd ~/src/atara && git checkout v1 && git pull
+cd app && npm ci && npm run build
+rm -rf /srv/atara/dist/* && cp -r dist/. /srv/atara/dist/
+
+chown -R atara:atara /srv/atara
+```
+
+`CGO_ENABLED=0` 能成立是因为 SQLite 驱动是纯 Go 的（modernc），产物是静态二进制，不依赖机器上的任何库。
 
 前端不需要配 API 地址：默认走相对路径 `/api/v1`，同源由 nginx 转发。前后端**不同源**时才需要
 `VITE_API_BASE=https://api.example.com/api/v1 npm run build`，那种部署要靠后端 CORS 放行，比反代麻烦也更容易配错。
+
+> 小机器上 `npm ci` 和 Go 编译都可能吃满内存。1G 内存的机器建议先挂 2G swap，
+> 否则会看到编译进程被 OOM killer 无声杀掉（`dmesg | tail` 才看得到原因）。
 
 ## 三、配置
 
@@ -100,9 +127,18 @@ systemctl start atara-pay
 ## 五、验证
 
 ```bash
-curl -u atara:PASS https://atara.example.com/api/v1/../healthz   # 后端活着
-curl -sI https://atara.example.com/ | head -3                     # 前端能开
-ss -lntp | grep 8080                                             # 应当只有 127.0.0.1
+# 后端活着（在服务器上直连；/healthz 挂在后端根路径，nginx 只反代 /api/，
+# 从公网访问 /healthz 会被 SPA 回退接走返回 index.html，验不出任何东西）
+curl -s 127.0.0.1:8080/healthz
+
+# 反代通了：这是一条真的后端接口，返回 USDT / USDC 才算对
+curl -su atara:PASS https://atara.example.com/api/v1/catalog/assets
+
+# 前端能开
+curl -sI https://atara.example.com/ | head -3
+
+# 后端只监听回环
+ss -lntp | grep 8080
 ```
 
 最后一条最重要：如果 `:8080` 绑在 `0.0.0.0`，公网可以直连后端、绕过 nginx 的全部访问控制。
