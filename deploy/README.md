@@ -139,10 +139,10 @@ systemctl start atara-pay
 curl -s 127.0.0.1:8080/healthz
 
 # 反代通了：这是一条真的后端接口，返回 USDT / USDC 才算对
-curl -su atara:PASS https://atara.example.com/api/v1/catalog/assets
+curl -su atara:PASS http://<服务器IP>:8090/api/v1/catalog/assets
 
 # 前端能开
-curl -sI https://atara.example.com/ | head -3
+curl -sI -u atara:PASS http://<服务器IP>:8090/ | head -3
 
 # 后端只监听回环
 ss -lntp | grep 8080
