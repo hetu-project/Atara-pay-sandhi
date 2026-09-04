@@ -60,8 +60,35 @@ func init() {
 }
 
 func Lookup(code string) (Asset, bool) { a, ok := byCode[code]; return a, ok }
-func Cryptos() []Asset                 { return cryptos }
-func Fiats() []Asset                   { return fiats }
+
+// ══ V1 交易范围 ══
+//
+// 注册表保留全部币种（历史工单要用它查精度），但**能开新单的只有这几种**。
+// 范围由这里声明、由目录端点对外发布——放在前端过滤的话，
+// 别的客户端拿到的还是全集，范围就成了一句口头约定。
+var tradableCrypto = map[string]bool{"USDT": true, "USDC": true}
+var tradableFiat = map[string]bool{"CNY": true, "HKD": true, "USD": true}
+
+// Tradable 说这个币现在能不能开新单。撮合、挂单、目录都认它。
+func Tradable(code string) bool { return tradableCrypto[code] || tradableFiat[code] }
+
+// Cryptos / Fiats 只列 V1 能交易的——目录、撮合、挂单校验都认它。
+func Cryptos() []Asset { return filterTradable(cryptos) }
+func Fiats() []Asset   { return filterTradable(fiats) }
+
+// AllCryptos 是注册表全集。钱包要列的是「你持有什么」，
+// 不是「你能交易什么」——历史留下的 BTC/ETH 余额不能因为下架就看不见了。
+func AllCryptos() []Asset { return cryptos }
+
+func filterTradable(in []Asset) []Asset {
+	out := make([]Asset, 0, len(in))
+	for _, a := range in {
+		if Tradable(a.Code) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
 
 func IsCrypto(code string) bool { a, ok := Lookup(code); return ok && a.Kind == KindCrypto }
 func IsFiat(code string) bool   { a, ok := Lookup(code); return ok && a.Kind == KindFiat }
@@ -78,10 +105,13 @@ func Corridors() []struct {
 	}, 0, len(order))
 	for _, g := range order {
 		var list []Asset
-		for _, f := range fiats {
+		for _, f := range Fiats() {
 			if f.Corridor == g {
 				list = append(list, f)
 			}
+		}
+		if len(list) == 0 {
+			continue // 一个都不剩的走廊不发，免得前端画一个空分组
 		}
 		out = append(out, struct {
 			Group  string  `json:"group"`

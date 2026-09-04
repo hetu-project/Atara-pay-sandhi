@@ -46,11 +46,15 @@ func (s *Service) CreateOffer(ctx context.Context, makerID, confirmToken string,
 	if req.Side != "buy" && req.Side != "sell" {
 		return nil, httpx.Fail(http.StatusBadRequest, "INVALID_SIDE", "side", "side must be buy or sell")
 	}
-	if !money.IsCrypto(req.Asset) {
-		return nil, httpx.Fail(http.StatusUnprocessableEntity, "UNKNOWN_ASSET", "asset", "not a settleable asset")
+	/* 交易范围是产品决策，挂单这一关必须认它——
+	   目录不发的币对，接口也不能收，否则范围就只是界面上的说法。 */
+	if !money.IsCrypto(req.Asset) || !money.Tradable(req.Asset) {
+		return nil, httpx.Fail(http.StatusUnprocessableEntity, "UNKNOWN_ASSET", "asset",
+			fmt.Sprintf("%s is not tradable — this version settles USDT and USDC", req.Asset))
 	}
-	if !money.IsFiat(req.Fiat) {
-		return nil, httpx.Fail(http.StatusUnprocessableEntity, "UNKNOWN_FIAT", "fiat", "not a settlement currency")
+	if !money.IsFiat(req.Fiat) || !money.Tradable(req.Fiat) {
+		return nil, httpx.Fail(http.StatusUnprocessableEntity, "UNKNOWN_FIAT", "fiat",
+			fmt.Sprintf("%s is not a settlement currency here — this version settles CNY, HKD and USD", req.Fiat))
 	}
 	price, err1 := decimal.NewFromString(req.UnitPrice)
 	qty, err2 := decimal.NewFromString(req.Qty)

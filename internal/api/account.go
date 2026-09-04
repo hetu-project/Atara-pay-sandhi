@@ -25,7 +25,8 @@ func (h *Handler) Wallet(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]row, 0, 4)
 	onChain, escrowed := decimal.Zero, decimal.Zero
-	for _, a := range money.Cryptos() {
+	// 钱包列的是持仓，不是交易范围——下架的币种里还有余额，得看得见
+	for _, a := range money.AllCryptos() {
 		bal, err := h.Svc.Ch.Balance(r.Context(), u.Address, a.Code)
 		if err != nil {
 			httpx.Error(w, err)
