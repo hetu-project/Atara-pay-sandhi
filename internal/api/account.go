@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/advaita/atara-pay/internal/app"
@@ -158,6 +159,38 @@ func (h *Handler) Connect(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	ok(w, auth.Actor(r.Context()))
+}
+
+// UpdateMe 目前只改展示名。
+//
+// 不开放改地址：地址是账户的唯一键，改它等于换一个账户，
+// 而已有的订单、额度、联系人全都挂在旧地址上。
+func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	name := strings.TrimSpace(req.DisplayName)
+	if name == "" {
+		httpx.Error(w, httpx.Fail(http.StatusBadRequest, "NAME_REQUIRED", "display_name",
+			"give the account a name"))
+		return
+	}
+	if len([]rune(name)) > 64 {
+		httpx.Error(w, httpx.Fail(http.StatusBadRequest, "NAME_TOO_LONG", "display_name",
+			"64 characters at most"))
+		return
+	}
+	u := auth.Actor(r.Context())
+	if err := h.Svc.St.RenameUser(r.Context(), u.ID, name); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	u.DisplayName = name
+	ok(w, u)
 }
 
 // PasskeyAssert 换取确认令牌。

@@ -36,6 +36,7 @@ func (h *Handler) Router() http.Handler {
 
 		// 账户：地址就是身份，余额读链
 		r.Get("/me", h.Me)
+		r.Post("/me", h.UpdateMe)
 		r.Post("/auth/connect", h.Connect)
 		r.Get("/wallet", h.Wallet)
 		r.Post("/passkey/assert", h.PasskeyAssert)

@@ -22,6 +22,13 @@ func (s *Store) UserByAddress(ctx context.Context, addr string) (*model.User, er
 	return scanUser(s.db.QueryRowContext(ctx, `select `+userCols+` from users where address=?`, addr).Scan)
 }
 
+// RenameUser 改展示名。地址才是账户的唯一键，展示名只是给人看的，
+// 所以改名不影响任何已有的订单、额度或联系人关系。
+func (s *Store) RenameUser(ctx context.Context, id, name string) error {
+	_, err := s.db.ExecContext(ctx, `update users set display_name=? where id=?`, name, id)
+	return err
+}
+
 // UserByHandle 兼容 X-Atara-User：既认地址，也认展示名（demo 里方便切身份）。
 func (s *Store) UserByHandle(ctx context.Context, h string) (*model.User, error) {
 	if u, err := s.UserByAddress(ctx, h); err == nil {
