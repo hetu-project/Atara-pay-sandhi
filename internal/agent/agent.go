@@ -64,6 +64,14 @@ type Assessment struct {
 	Votes     []Vote `json:"votes"`
 	Summary   string `json:"summary"`
 	Threshold int    `json:"threshold"`
+
+	// Sources / Records 是这次评估读了多少个数据源、多少条记录。
+	// 界面上「Read 23 sources · 447 records」那一行用它。
+	//
+	// 由评估器自己报，不由上层猜：这句话是在向用户交代「凭什么」，
+	// 让接口层按票数编一个好看的数，就是拿一句假话去支撑一个判断。
+	Sources int `json:"sources"`
+	Records int `json:"records"`
 }
 
 type RiskAssessor interface {

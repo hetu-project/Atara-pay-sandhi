@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -369,13 +370,22 @@ func (s *Service) Take(ctx context.Context, takerID, offerID string, req TakeReq
 
 	now := time.Now().UTC()
 	id := store.NewID()
-	// 下单那一刻算一次分，存进工单。之后只读——见 app/score.go 里的说明。
+	// 下单那一刻算一次分、收一次费、跑一次评估，三样都存进工单。
+	// 之后只读——见 app/score.go 与 money/fee.go 里的说明。
 	peer, _ := s.St.Merchant(ctx, o.MakerID)
+	snap := ""
+	if a, err := s.Assess(ctx, o.ID); err == nil {
+		if b, err := json.Marshal(a); err == nil {
+			snap = string(b)
+		}
+	}
 	ord := &order.Order{
 		ID: id, Ref: Ref(), Kind: order.OTCTake,
 		OwnerID: takerID, CounterpartyID: o.MakerID,
 		Asset: o.Asset, Amount: coinQty, AllowanceID: req.AllowanceID,
 		TrustScore: ScoreOrder(id, peer, money.New(coinQty, o.Asset).USD()),
+		FeeAmount:  money.Fee(fiatAmt, o.Fiat), FeeBps: money.TakerFeeBps,
+		Assessment: snap,
 		State:      order.Match, CreatedAt: now, UpdatedAt: now,
 		OTC: &order.OTC{
 			OfferID: o.ID, Side: takerSide, UnitPrice: o.UnitPrice,

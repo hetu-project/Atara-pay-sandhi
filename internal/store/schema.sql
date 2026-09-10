@@ -43,6 +43,9 @@ create table if not exists contacts (
   contact_id  text not null references users(id),
   label       text not null default '',   -- Supplier / Client / Colleague / Friend / My agent
   nickname    text not null default '',
+  -- 加联系人是一次请求，不是一次收藏：对方得同意。pending 的联系人
+  -- 不能被指定为收款方——否则「加了就能付」，对方从头到尾没说过话。
+  status      text not null default 'accepted' check (status in ('pending','accepted')),
   created_at  text not null,
   primary key (owner_id, contact_id)
 );
@@ -110,6 +113,16 @@ create table if not exists orders (
   -- 下单那一刻算出来的风控评分，之后只读不重算。见 app/score.go：
   -- 重算的话历史单的分会跟着后来的事变，那就不是「当时的判断」了。
   trust_score     integer not null default 0,
+  -- 手续费也是下单那一刻定的。存金额而不是只存费率：费率改了，
+  -- 历史单上写的必须还是当时收的那个数。
+  fee_amount      text not null default '0',
+  fee_bps         integer not null default 0,
+  -- 下单前跑的那次风控评估，整份存下来。
+  --
+  -- 不存的话它只在评估跑的那几秒里存在于前端内存里——刷新页面、换个设备、
+  -- 事后复盘，全都看不到当初凭什么放行的。而这份「凭什么」正是这套东西
+  -- 要给出的东西。存 JSON 不逐列建模：它是一份快照，不参与查询。
+  assessment      text not null default '',
   created_at      text not null,
   updated_at      text not null
 );

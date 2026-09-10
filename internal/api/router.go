@@ -34,6 +34,10 @@ func (h *Handler) Router() http.Handler {
 		// Discover 的三个纵向；Tasks 是订单的投影，不是独立实体
 		r.Get("/discover/markets", h.DiscoverMarkets)
 		r.Get("/tasks", h.Tasks)
+		// 找人加联系人：名字模糊、地址精确
+		r.Get("/accounts/search", h.SearchAccounts)
+		r.Get("/contact-requests", h.ContactRequests)
+		r.Post("/contact-requests/{id}/accept", h.AcceptContact)
 
 		// 账户：地址就是身份，余额读链
 		r.Get("/me", h.Me)

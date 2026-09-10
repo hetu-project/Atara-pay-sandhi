@@ -68,7 +68,7 @@ func (s *Store) SetWalletKind(ctx context.Context, userID, kind string) error {
 
 func (s *Store) Contacts(ctx context.Context, ownerID string) ([]*model.Contact, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`select u.id,u.address,u.display_name,u.kind,c.label,c.nickname
+		`select u.id,u.address,u.display_name,u.kind,c.label,c.nickname,c.status
 		   from contacts c join users u on u.id=c.contact_id
 		  where c.owner_id=? order by u.display_name`, ownerID)
 	if err != nil {
@@ -78,7 +78,8 @@ func (s *Store) Contacts(ctx context.Context, ownerID string) ([]*model.Contact,
 	var out []*model.Contact
 	for rows.Next() {
 		var c model.Contact
-		if err := rows.Scan(&c.ContactID, &c.Address, &c.Name, &c.Kind, &c.Label, &c.Nickname); err != nil {
+		if err := rows.Scan(&c.ContactID, &c.Address, &c.Name, &c.Kind, &c.Label,
+			&c.Nickname, &c.Status); err != nil {
 			return nil, err
 		}
 		out = append(out, &c)
@@ -97,12 +98,118 @@ func (s *Store) ResolveContact(ctx context.Context, q string) (*model.User, erro
 		`select `+userCols+` from users where lower(display_name)=lower(?) limit 1`, q).Scan)
 }
 
-func (s *Store) AddContact(ctx context.Context, ownerID, contactID, label, nickname string) error {
+// SearchAccounts 按名字或地址找账户。
+//
+// 地址精确匹配，名字模糊：地址错一个字符就是另一个人，模糊匹配等于把钱
+// 往可能错的地方引；名字是给人认的，本来就该能搜个大概。
+//
+// 排除自己和已经加过的人——把「已经在列表里」的人再列一遍，点下去只会
+// 得到一句「已存在」。
+func (s *Store) SearchAccounts(ctx context.Context, viewerID, q string, limit int) ([]*model.User, error) {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 20 {
+		limit = 8
+	}
+	// 看着像地址就只按地址精确查。
+	if strings.HasPrefix(q, "0x") || strings.HasPrefix(q, "T") || strings.HasPrefix(q, "bc1") {
+		u, err := s.UserByAddress(ctx, q)
+		if err != nil || u.ID == viewerID {
+			return nil, nil
+		}
+		return []*model.User{u}, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`select `+userCols+` from users
+		  where id <> ? and lower(display_name) like lower(?)
+		    and id not in (select contact_id from contacts where owner_id = ?)
+		  order by length(display_name), display_name limit ?`,
+		viewerID, "%"+q+"%", viewerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.User
+	for rows.Next() {
+		u, err := scanUser(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// AddContact 记一条联系人请求。
+//
+// status 由调用方给：加别人是 pending（要对方点头），对方回加你就是 accepted。
+func (s *Store) AddContact(ctx context.Context, ownerID, contactID, label, nickname, status string) error {
+	if status == "" {
+		status = "pending"
+	}
 	_, err := s.db.ExecContext(ctx,
-		`insert into contacts(owner_id,contact_id,label,nickname,created_at) values(?,?,?,?,?)
+		`insert into contacts(owner_id,contact_id,label,nickname,status,created_at) values(?,?,?,?,?,?)
 		 on conflict(owner_id,contact_id) do update set label=excluded.label, nickname=excluded.nickname`,
-		ownerID, contactID, label, nickname, ts(Now()))
+		ownerID, contactID, label, nickname, status, ts(Now()))
 	return err
+}
+
+// PendingRequests 是别人发给我、我还没点头的联系人请求。
+func (s *Store) PendingRequests(ctx context.Context, meID string) ([]*model.Contact, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`select u.id,u.address,u.display_name,u.kind,c.label,c.nickname,c.status
+		   from contacts c join users u on u.id=c.owner_id
+		  where c.contact_id=? and c.status='pending'
+		    and not exists (select 1 from contacts x
+		                     where x.owner_id=? and x.contact_id=c.owner_id
+		                       and x.status='accepted')
+		  order by c.created_at desc`, meID, meID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.Contact
+	for rows.Next() {
+		var c model.Contact
+		if err := rows.Scan(&c.ContactID, &c.Address, &c.Name, &c.Kind, &c.Label,
+			&c.Nickname, &c.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, &c)
+	}
+	return out, rows.Err()
+}
+
+// ContactStatus 说 owner 有没有把 contact 加进列表，以及处于什么状态。
+// 空字符串表示没加过。
+func (s *Store) ContactStatus(ctx context.Context, ownerID, contactID string) string {
+	var st string
+	if err := s.db.QueryRowContext(ctx,
+		`select status from contacts where owner_id=? and contact_id=?`,
+		ownerID, contactID).Scan(&st); err != nil {
+		return ""
+	}
+	return st
+}
+
+// AcceptContact 对方点头。两边各记一行——联系人是双向的，只记一边的话
+// 对方的列表里看不到这个人，却能收到他的付款。
+func (s *Store) AcceptContact(ctx context.Context, ownerID, contactID string) error {
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(
+			`update contacts set status='accepted' where owner_id=? and contact_id=?`,
+			ownerID, contactID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(
+			`insert into contacts(owner_id,contact_id,label,nickname,status,created_at)
+			 values(?,?,'','','accepted',?)
+			 on conflict(owner_id,contact_id) do update set status='accepted'`,
+			contactID, ownerID, ts(Now()))
+		return err
+	})
 }
 
 // ── 商户画像 ──

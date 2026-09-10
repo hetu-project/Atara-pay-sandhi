@@ -47,18 +47,21 @@ type Contact struct {
 	Kind      string `json:"kind"`
 	Label     string `json:"label"` // Supplier / Client / Colleague / Friend / My agent
 	Nickname  string `json:"nickname,omitempty"`
+	// Status 是 pending 还是 accepted。pending 的联系人不能被指定为收款方——
+	// 否则「加了就能付」，对方从头到尾没说过话。
+	Status string `json:"status"`
 }
 
 // Allowance 是一份签进链上的支配权：谁能花、单笔多少、窗口内多少、到什么时候、能付给谁。
 // 它不是平台的额度表——平台只是记着链上签发了什么。
 type Allowance struct {
-	ID         string          `json:"id"`
-	OwnerID    string          `json:"-"`
-	Spender    string          `json:"spender"`
-	Kind       string          `json:"kind"` // person | agent
-	Asset      string          `json:"asset"`
+	ID      string `json:"id"`
+	OwnerID string `json:"-"`
+	Spender string `json:"spender"`
+	Kind    string `json:"kind"` // person | agent
+	Asset   string `json:"asset"`
 	// Network 是这份授权所在的链。空表示旧数据（那时只有一条链）。
-	Network string `json:"network"`
+	Network    string          `json:"network"`
 	PerPayment decimal.Decimal `json:"per_payment"`
 	WindowCap  decimal.Decimal `json:"window_cap"`
 	Used       decimal.Decimal `json:"used"`

@@ -4,23 +4,35 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/advaita/atara-pay/internal/domain/condition"
 	"github.com/advaita/atara-pay/internal/domain/order"
 )
 
+// placeholders 按列表算出等长的一串 ?。
+//
+// 手写 ?,?,?… 的问题不是麻烦，是它跟列表会悄悄错开：加一列忘了加一个问号，
+// 编译过、测试可能也过，直到某次插入才炸「21 values for 22 columns」。
+// 让它自己数。
+func placeholders(cols string) string {
+	n := strings.Count(cols, ",") + 1
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
 const orderCols = `id,ref,kind,owner_id,counterparty_id,asset_code,amount,note,allowance_id,
 	state,terminal,state_deadline,funding_via,escrow_tx,escrow_addr,escrow_network,trust_score,
-	created_at,updated_at`
+	fee_amount,fee_bps,assessment,created_at,updated_at`
 
 func (s *Store) InsertOrder(tx *sql.Tx, o *order.Order) error {
 	if _, err := tx.Exec(
-		`insert into orders(`+orderCols+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`insert into orders(`+orderCols+`) values(`+placeholders(orderCols)+`)`,
 		o.ID, o.Ref, o.Kind, o.OwnerID, emptyToNull(o.CounterpartyID), o.Asset, decStr(o.Amount),
 		o.Note, emptyToNull(o.AllowanceID), o.State, emptyToNull(string(o.Terminal)),
 		nullTS(o.StateDeadline), o.FundingVia, o.EscrowTx, o.EscrowAddr, o.EscrowNetwork,
-		o.TrustScore, ts(o.CreatedAt), ts(o.UpdatedAt)); err != nil {
+		o.TrustScore, decStr(o.FeeAmount), o.FeeBps, o.Assessment,
+		ts(o.CreatedAt), ts(o.UpdatedAt)); err != nil {
 		return err
 	}
 	if o.Cond != nil {
@@ -111,15 +123,16 @@ func loadOrder(scan func(...any) error,
 func scanOrder(scan func(...any) error) (*order.Order, error) {
 	var o order.Order
 	var cp, card, term, deadline sql.NullString
-	var amount, created, updated string
+	var amount, created, updated, fee string
 	if err := scan(&o.ID, &o.Ref, &o.Kind, &o.OwnerID, &cp, &o.Asset, &amount, &o.Note, &card,
 		&o.State, &term, &deadline, &o.FundingVia, &o.EscrowTx, &o.EscrowAddr, &o.EscrowNetwork,
-		&o.TrustScore, &created, &updated); err != nil {
+		&o.TrustScore, &fee, &o.FeeBps, &o.Assessment, &created, &updated); err != nil {
 		return nil, err
 	}
 	o.CounterpartyID, o.AllowanceID = nullStr(cp), nullStr(card)
 	o.Terminal = order.Terminal(nullStr(term))
 	o.Amount = dec(amount)
+	o.FeeAmount = dec(fee)
 	o.CreatedAt, o.UpdatedAt = parseTS(created), parseTS(updated)
 	if deadline.Valid {
 		t := parseTS(deadline.String)

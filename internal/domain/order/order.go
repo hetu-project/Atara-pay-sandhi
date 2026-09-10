@@ -138,6 +138,14 @@ type Order struct {
 	// TrustScore 是下单那一刻算出来的风控评分（60–99）。算法见 app/score.go。
 	// 存下来不重算：评分是对当时的判断，不该跟着后来的事变。
 	TrustScore int `json:"trust_score"`
+
+	// FeeAmount / FeeBps 是这一单的手续费，同样在下单那一刻定死。
+	// 存金额而不是只存费率：费率改了，历史单上写的必须还是当时收的那个数。
+	FeeAmount decimal.Decimal `json:"fee_amount"`
+	FeeBps    int             `json:"fee_bps"`
+
+	// Assessment 是下单前跑的那次风控评估的快照（JSON）。空表示没跑过。
+	Assessment string `json:"-"`
 	PayeeAddr  string
 
 	// 链上事实。这几个字段是从 chain.Chain 读回来的快照，不是平台自己的账。

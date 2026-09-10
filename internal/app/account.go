@@ -189,6 +189,20 @@ func shortAddr(a string) string {
 
 // ── 额度 ──
 
+// SearchAccounts 找人。名字模糊、地址精确——见 store.SearchAccounts。
+func (s *Service) SearchAccounts(ctx context.Context, viewerID, q string) ([]*model.User, error) {
+	return s.St.SearchAccounts(ctx, viewerID, q, 8)
+}
+
+// AcceptContact 接受一条联系人请求。
+func (s *Service) AcceptContact(ctx context.Context, ownerID, peerID string) error {
+	if s.St.ContactStatus(ctx, peerID, ownerID) == "" {
+		return httpx.Fail(http.StatusUnprocessableEntity, "NO_REQUEST", "",
+			"there is no request from that account")
+	}
+	return s.St.AcceptContact(ctx, peerID, ownerID)
+}
+
 type AllowanceReq struct {
 	ID         string `json:"-"`
 	Spender    string `json:"spender"`
@@ -348,11 +362,24 @@ func (s *Service) AddContact(ctx context.Context, ownerID, query, label, nicknam
 	if label == "" {
 		label = "Client"
 	}
-	if err := s.St.AddContact(ctx, ownerID, u.ID, label, nickname); err != nil {
+	// 加联系人是一次请求，要等对方点头。
+	//
+	// 例外：对方已经把我加了，那这一下就是回加——两边都表达过意愿，
+	// 再要一次确认没有意义，直接互相接受。
+	status := "pending"
+	if s.St.ContactStatus(ctx, u.ID, ownerID) != "" {
+		status = "accepted"
+	}
+	if err := s.St.AddContact(ctx, ownerID, u.ID, label, nickname, status); err != nil {
 		return nil, err
 	}
+	if status == "accepted" {
+		if err := s.St.AcceptContact(ctx, ownerID, u.ID); err != nil {
+			return nil, err
+		}
+	}
 	return &model.Contact{ContactID: u.ID, Address: u.Address, Name: u.DisplayName,
-		Kind: u.Kind, Label: label, Nickname: nickname}, nil
+		Kind: u.Kind, Label: label, Nickname: nickname, Status: status}, nil
 }
 
 // ── 线程 ──

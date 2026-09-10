@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -19,6 +20,9 @@ type ChainEvent struct {
 	Memo    string          `json:"memo,omitempty"`
 	OrderID string          `json:"order_id,omitempty"`
 	OfferID string          `json:"offer_id,omitempty"`
+	// At 是这一步发生的时间。证据包要按时间排出来给人看，
+	// 只给一串哈希是让人自己去链上对时间。
+	At time.Time `json:"at"`
 }
 
 func LogChain(tx *sql.Tx, actorID string, e ChainEvent) error {
@@ -41,7 +45,7 @@ func (s *Store) LogChainNoTx(ctx context.Context, actorID string, e ChainEvent) 
 
 func (s *Store) ChainEvents(ctx context.Context, orderID string) ([]ChainEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`select kind,asset,amount,tx_hash,memo from chain_events where order_id=? order by id`, orderID)
+		`select kind,asset,amount,tx_hash,memo,created_at from chain_events where order_id=? order by id`, orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -49,11 +53,12 @@ func (s *Store) ChainEvents(ctx context.Context, orderID string) ([]ChainEvent, 
 	var out []ChainEvent
 	for rows.Next() {
 		var e ChainEvent
-		var amt string
-		if err := rows.Scan(&e.Kind, &e.Asset, &amt, &e.TxHash, &e.Memo); err != nil {
+		var amt, at string
+		if err := rows.Scan(&e.Kind, &e.Asset, &amt, &e.TxHash, &e.Memo, &at); err != nil {
 			return nil, err
 		}
 		e.Amount = dec(amt)
+		e.At = parseTS(at)
 		e.OrderID = orderID
 		out = append(out, e)
 	}

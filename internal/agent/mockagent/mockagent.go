@@ -161,9 +161,25 @@ func (Suite) Assess(_ context.Context, in agent.AssessInput) (agent.Assessment, 
 	if passed < threshold {
 		summary += " — below the 6/7 consensus threshold"
 	}
+	// 读了多少来源、多少记录。
+	//
+	// mock 里这是按输入推出来的：每个 agent 手上有自己那几个源，记录数随
+	// 对手方的成交与纠纷量涨。它不是真的去数过——但至少是可解释的、稳定的，
+	// 而且随对手方变化。接真模型时这两个数由模型如实报。
+	sources := len(votes) * 3
+	records := len(votes) * 12
+	for _, d := range []bool{in.Docs["kyc"], in.Docs["pof"], in.Docs["sow"], in.Docs["chain"]} {
+		if d {
+			sources += 2
+			records += 35
+		}
+	}
+	records += in.Deals*3 + in.Disputes*17
+
 	return agent.Assessment{
 		Score: in.TrustScore, Passed: passed, Total: len(votes),
 		Votes: votes, Summary: summary, Threshold: threshold,
+		Sources: sources, Records: records,
 	}, nil
 }
 

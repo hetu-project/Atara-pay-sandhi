@@ -69,6 +69,56 @@ func (h *Handler) Wallet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// SearchAccounts 找人加联系人。名字模糊、地址精确。
+//
+// 为什么要有这个接口：前端原来是从公开挂单里推人名的，那只覆盖「正在挂单
+// 的人」——对方没挂单就永远搜不到，哪怕账户真实存在。
+func (h *Handler) SearchAccounts(w http.ResponseWriter, r *http.Request) {
+	us, err := h.Svc.SearchAccounts(r.Context(), h.actorID(r), r.URL.Query().Get("q"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	type row struct {
+		ID      string `json:"id"`
+		Address string `json:"address"`
+		Name    string `json:"name"`
+		Kind    string `json:"kind"`
+		// 已经互相加过的人不在结果里（SQL 已经排掉），这里带上成绩单，
+		// 让人在点「添加」之前就看得见对方是谁。
+		Deals      int `json:"deals"`
+		TrustScore int `json:"trust_score"`
+	}
+	out := make([]row, 0, len(us))
+	for _, u := range us {
+		x := row{ID: u.ID, Address: u.Address, Name: u.DisplayName, Kind: u.Kind}
+		if m, err := h.St.Merchant(r.Context(), u.ID); err == nil {
+			x.Deals, x.TrustScore = m.Deals, m.TrustScore
+		}
+		out = append(out, x)
+	}
+	ok(w, map[string]any{"accounts": out})
+}
+
+// ContactRequests 是别人发给我、还没点头的请求。
+func (h *Handler) ContactRequests(w http.ResponseWriter, r *http.Request) {
+	cs, err := h.St.PendingRequests(r.Context(), h.actorID(r))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, map[string]any{"requests": cs})
+}
+
+// AcceptContact 接受一条请求。
+func (h *Handler) AcceptContact(w http.ResponseWriter, r *http.Request) {
+	if err := h.Svc.AcceptContact(r.Context(), h.actorID(r), chi.URLParam(r, "id")); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, map[string]any{"status": "accepted"})
+}
+
 // ── 额度 ──
 
 func (h *Handler) Allowances(w http.ResponseWriter, r *http.Request) {

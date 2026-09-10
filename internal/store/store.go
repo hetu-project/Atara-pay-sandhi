@@ -51,6 +51,10 @@ func addColumns(ctx context.Context, db *sql.DB) error {
 		{"maker_applications", "auto_review_at", "text"},
 		{"orders", "trust_score", "integer not null default 0"},
 		{"allowances", "network", "text not null default ''"},
+		{"orders", "fee_amount", "text not null default '0'"},
+		{"orders", "fee_bps", "integer not null default 0"},
+		{"orders", "assessment", "text not null default ''"},
+		{"contacts", "status", "text not null default 'accepted'"},
 	}
 	for _, w := range want {
 		rows, err := db.QueryContext(ctx, "select name from pragma_table_info(?)", w.table)
