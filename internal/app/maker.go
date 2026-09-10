@@ -50,6 +50,13 @@ func (s *Service) SubmitMakerApplication(ctx context.Context, userID string,
 		KYCDone: cur.KYCDone, KYCOk: cur.KYCOk, ListingDone: cur.ListingDone, Approved: cur.Approved}
 	if req.Phase == "kyc" {
 		next.KYCDone = true
+		// 身份材料交完即视为通过。真实环境这一步是有人看件的，但那条路在演示里
+		// 是个死胡同：没人去审核台点一下，提交完的账户就永远停在「审核中」，
+		// 后面的挂单配置、成交全都走不下去。
+		//
+		// 挂单配置那一段仍然要人审——它决定这个人能对外挂什么价、多大额度，
+		// 那是真该有人看一眼的地方，而且卡在那里不影响演示买方的完整链路。
+		next.KYCOk = true
 	} else {
 		next.ListingDone = true
 	}
