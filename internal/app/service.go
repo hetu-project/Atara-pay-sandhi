@@ -10,7 +10,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"time"
 
@@ -24,6 +23,7 @@ import (
 	"github.com/advaita/atara-pay/internal/httpx"
 	"github.com/advaita/atara-pay/internal/money"
 	"github.com/advaita/atara-pay/internal/settlement"
+	"github.com/advaita/atara-pay/internal/snowflake"
 	"github.com/advaita/atara-pay/internal/store"
 	"github.com/shopspring/decimal"
 )
@@ -40,14 +40,30 @@ func New(st *store.Store, ag agent.Suite, ch chain.Chain, cfg config.Config, c *
 	return &Service{St: st, Ag: ag, Ch: ch, Cfg: cfg, Confirm: c}
 }
 
-// Ref 生成工单号。单据引用的就是这个号，只读不可改。
-func Ref() string {
-	const hexes = "0123456789ABCDEF"
-	b := make([]byte, 6)
-	for i := range b {
-		b[i] = hexes[rand.Intn(len(hexes))]
+// refs 是全局发号器。工单号必须唯一（orders.ref 上有 unique 约束），
+// 用一个进程内的发号器而不是每次现随机——见 internal/snowflake。
+//
+// 节点号从 ATARA_NODE_ID 读。多实例部署时每个实例必须给不同的号，
+// 否则两边会发出同一段 id，unique 约束就会在插入时炸。
+var refs = func() *snowflake.Node {
+	n, err := snowflake.New(int64(config.NodeID()))
+	if err != nil {
+		// 配错节点号是启动期的配置错误，不能带着它跑——两个实例发重复的号
+		// 会让下单在随机时刻失败，那种问题查起来毫无头绪。
+		panic(err)
 	}
-	return "ATR-" + string(b)
+	return n
+}()
+
+// Ref 生成工单号。单据引用的就是这个号，只读不可改。
+//
+// 形如 ATR-01K4M2P8QR3ZC。后面 13 位是雪花号的 base32：按时间递增、
+// 多实例不撞、号里带着下单时间。
+//
+// 为什么不直接用十进制的雪花号：那是 19 位数字，而这个号要由人抄进银行
+// 转账的附言里。base32 同样的信息 13 位，而且用的是去掉 I/L/O/U 的字母表。
+func Ref() string {
+	return "ATR-" + snowflake.Encode(refs.Next())
 }
 
 // Digest 是确认令牌绑定的操作摘要：换了金额或对手方，旧令牌就不认了。

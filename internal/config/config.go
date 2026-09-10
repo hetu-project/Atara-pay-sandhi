@@ -142,6 +142,22 @@ func envDur(k string, def time.Duration) time.Duration {
 	return d
 }
 
+// NodeID 是这个实例在发号器里的编号（0–1023）。
+//
+// 多实例部署时每个实例必须给不同的号：两个实例用同一个号会发出重复的工单号，
+// 而 orders.ref 上有 unique 约束——表现是下单在随机时刻失败。
+func NodeID() int {
+	v := os.Getenv("ATARA_NODE_ID")
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 || n > 1023 {
+		return 0
+	}
+	return n
+}
+
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v

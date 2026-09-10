@@ -1,14 +1,42 @@
+# 依赖（任何层级）
+node_modules/
+
+# 构建产物
 bin/
+dist/
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+contracts/artifacts/
+contracts/types/
+contracts/lib/
+docs/contracts/lib/
+
+# 运行时数据
 var/
 atara.db
 atara.db-wal
 atara.db-shm
-.superpowers/
-docs/contracts/lib/
-contracts/out/
-contracts/cache/
-contracts/broadcast/
-contracts/node_modules/
-contracts/artifacts/
-contracts/types/
+*.db-wal
+*.db-shm
+
+# 密钥与本地配置
 .env
+.env.*
+!.env.example
+
+# 日志
+*.log
+
+# 编辑器 / 操作系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python 脚本缓存
+__pycache__/
+*.pyc
+
+# 工具目录
+.superpowers/
