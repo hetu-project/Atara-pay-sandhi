@@ -57,6 +57,8 @@ type Allowance struct {
 	Spender    string          `json:"spender"`
 	Kind       string          `json:"kind"` // person | agent
 	Asset      string          `json:"asset"`
+	// Network 是这份授权所在的链。空表示旧数据（那时只有一条链）。
+	Network string `json:"network"`
 	PerPayment decimal.Decimal `json:"per_payment"`
 	WindowCap  decimal.Decimal `json:"window_cap"`
 	Used       decimal.Decimal `json:"used"`

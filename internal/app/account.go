@@ -30,11 +30,24 @@ func (s *Service) EscrowedFor(ctx context.Context, userID, asset string) decimal
 	if err != nil {
 		return total
 	}
-	if lk, ok := s.Ch.(interface {
-		ListingLocked(context.Context, string, string) (decimal.Decimal, error)
-	}); ok {
-		if v, err := lk.ListingLocked(ctx, u.Address, asset); err == nil {
-			total = total.Add(v)
+	// 挂单锁的那部分：逐条问链，这条挂单下面到底锁着多少。
+	//
+	// 原来走的是 ListingLocked 那个接口断言——只有 mockchain 实现它，所以
+	// 接上真链之后这一整块恒为 0：账户页显示「In escrow contracts $0」，
+	// 而人明明挂着一条卖单、币就在合约里。断言失败是静默的，这类洞不会报错。
+	// 换成 ListingLockOf，两条链都实现，走的是同一段逻辑。
+	if offers, err := s.St.Offers(ctx, store.OfferFilter{Maker: userID, Status: "active"}); err == nil {
+		for _, o := range offers {
+			if o.Side != "sell" || !strings.EqualFold(o.Asset, asset) {
+				continue
+			}
+			l, err := s.Ch.ListingLockOf(ctx, o.ID)
+			if err != nil || l == nil || !l.Open {
+				continue
+			}
+			// 算 Total 而不是可用量：被订单绑走的那部分也还在合约里，
+			// 只是划给了具体的单。对「我有多少钱锁着」这个问题，它算数。
+			total = total.Add(l.Total)
 		}
 	}
 	orders, err := s.St.Orders(ctx, store.OrderFilter{Owner: userID, Open: true})
@@ -49,7 +62,7 @@ func (s *Service) EscrowedFor(ctx context.Context, userID, asset string) decimal
 		if err != nil || p == nil || p.Status != "escrowed" {
 			continue
 		}
-		// 挂单锁的那部分已经在 ListingLocked 里算过了，别算两遍
+		// 挂单锁的那部分上面已经算过了，别算两遍
 		if p.OfferID != "" || p.Owner != u.Address {
 			continue
 		}
@@ -185,6 +198,10 @@ type AllowanceReq struct {
 	Cycle      string `json:"cycle"`
 	Expires    string `json:"expires"` // "30 days" | "90 days" | "" = 不过期
 	Recipients string `json:"recipients"`
+	// Asset / Network 说这份授权是对哪条链上的哪个代币。不问的话，同一个
+	// 币在四条链上的授权会混成一份，撤销时也不知道该去哪条链上撤。
+	Asset   string `json:"asset"`
+	Network string `json:"network"`
 }
 
 // SaveAllowance 开一份或改一份额度。
@@ -220,8 +237,22 @@ func (s *Service) SaveAllowance(ctx context.Context, ownerID, confirmToken strin
 		return nil, err
 	}
 
+	asset := strings.ToUpper(strings.TrimSpace(req.Asset))
+	if asset == "" {
+		asset = "USDT"
+	}
+	if !money.IsCrypto(asset) || !money.Tradable(asset) {
+		return nil, httpx.Fail(http.StatusUnprocessableEntity, "UNKNOWN_ASSET", "asset",
+			fmt.Sprintf("%s is not tradable here — this version settles USDT and USDC", asset))
+	}
+	network := strings.TrimSpace(req.Network)
+	if network != "" && !money.KnownNetwork(network) {
+		return nil, httpx.Fail(http.StatusUnprocessableEntity, "UNKNOWN_NETWORK", "network",
+			fmt.Sprintf("%s is not a network this version supports", network))
+	}
 	a := &model.Allowance{
-		ID: req.ID, OwnerID: ownerID, Spender: req.Spender, Kind: req.Kind, Asset: "USDT",
+		ID: req.ID, OwnerID: ownerID, Spender: req.Spender, Kind: req.Kind,
+		Asset: asset, Network: network,
 		PerPayment: per, WindowCap: capv, Cycle: cycle, Recipients: req.Recipients,
 		WalletKind: u.WalletKind, Status: "live",
 	}

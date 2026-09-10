@@ -54,6 +54,9 @@ create table if not exists allowances (
   spender      text not null,
   kind         text not null check (kind in ('person','agent')),
   asset        text not null default 'USDT',
+  -- 额度是对某条链上某个代币合约的授权。不记链的话，同一个币在四条链上
+  -- 的授权会混成一份，撤销时也不知道该去哪条链上撤。
+  network      text not null default '',
   per_payment  text not null,
   window_cap   text not null,
   used         text not null default '0',

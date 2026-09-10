@@ -18,16 +18,27 @@ import (
 func (h *Handler) Wallet(w http.ResponseWriter, r *http.Request) {
 	u := auth.Actor(r.Context())
 	type row struct {
-		Asset    string   `json:"asset"`
-		OnChain  string   `json:"on_chain"`
-		InEscrow string   `json:"in_escrow"`
-		USD      string   `json:"usd_value"`
-		Networks []string `json:"networks"`
+		Asset string `json:"asset"`
+		// Network 是这笔余额实际所在的链，不是「这个币支持哪些链」。
+		Network  string `json:"network"`
+		OnChain  string `json:"on_chain"`
+		InEscrow string `json:"in_escrow"`
+		USD      string `json:"usd_value"`
 	}
 	rows := make([]row, 0, 4)
 	onChain, escrowed := decimal.Zero, decimal.Zero
-	// 钱包列的是持仓，不是交易范围——下架的币种里还有余额，得看得见
-	for _, a := range money.AllCryptos() {
+	info := h.Svc.Ch.Info(r.Context())
+	// 余额是「某条链上的某个代币合约里有多少」，不是一个抽象的数。所以每行
+	// 都标出它到底在哪条链上——原来标的是目录里那一串支持的网络，读的人会
+	// 以为这笔钱在第一条链上，而它其实在后端连着的那条。
+	//
+	// 只列可交易的两种（USDT / USDC）：BTC / ETH 这一版没有合约地址，
+	// 读不到余额，列出来只会是恒 0 的两行。
+	net := info.Network
+	if net == "" {
+		net = "—"
+	}
+	for _, a := range money.Cryptos() {
 		bal, err := h.Svc.Ch.Balance(r.Context(), u.Address, a.Code)
 		if err != nil {
 			httpx.Error(w, err)
@@ -39,8 +50,9 @@ func (h *Handler) Wallet(w http.ResponseWriter, r *http.Request) {
 		}
 		onChain = onChain.Add(money.New(bal, a.Code).USD())
 		escrowed = escrowed.Add(money.New(esc, a.Code).USD())
-		rows = append(rows, row{a.Code, bal.String(), esc.String(),
-			money.New(bal.Add(esc), a.Code).USD().Round(2).String(), a.Networks})
+		rows = append(rows, row{Asset: a.Code, Network: net,
+			OnChain: bal.String(), InEscrow: esc.String(),
+			USD: money.New(bal.Add(esc), a.Code).USD().Round(2).String()})
 	}
 	escAddr, escNet := h.Svc.Ch.EscrowAddress("USDT")
 	ok(w, map[string]any{

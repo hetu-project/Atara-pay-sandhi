@@ -136,7 +136,7 @@ func (s *Store) BumpMerchant(tx *sql.Tx, userID string, completed bool) error {
 
 // ── 额度 ──
 
-const allowCols = `id,owner_id,spender,kind,asset,per_payment,window_cap,used,cycle,
+const allowCols = `id,owner_id,spender,kind,asset,network,per_payment,window_cap,used,cycle,
 	expires_at,recipients,template,wallet_kind,chain_tx,status,note`
 
 func (s *Store) Allowances(ctx context.Context, ownerID string) ([]*model.Allowance, error) {
@@ -165,7 +165,7 @@ func scanAllowance(scan func(...any) error) (*model.Allowance, error) {
 	var a model.Allowance
 	var per, cap_, used string
 	var exp sql.NullString
-	if err := scan(&a.ID, &a.OwnerID, &a.Spender, &a.Kind, &a.Asset, &per, &cap_, &used, &a.Cycle,
+	if err := scan(&a.ID, &a.OwnerID, &a.Spender, &a.Kind, &a.Asset, &a.Network, &per, &cap_, &used, &a.Cycle,
 		&exp, &a.Recipients, &a.Template, &a.WalletKind, &a.ChainTx, &a.Status, &a.Note); err != nil {
 		return nil, err
 	}
@@ -183,12 +183,13 @@ func (s *Store) SaveAllowance(ctx context.Context, a *model.Allowance) error {
 		exp = ts(*a.ExpiresAt)
 	}
 	_, err := s.db.ExecContext(ctx,
-		`insert into allowances(`+allowCols+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		 on conflict(id) do update set spender=excluded.spender, per_payment=excluded.per_payment,
+		`insert into allowances(`+allowCols+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 on conflict(id) do update set spender=excluded.spender, asset=excluded.asset,
+		   network=excluded.network, per_payment=excluded.per_payment,
 		   window_cap=excluded.window_cap, cycle=excluded.cycle, expires_at=excluded.expires_at,
 		   recipients=excluded.recipients, wallet_kind=excluded.wallet_kind,
 		   chain_tx=excluded.chain_tx, status=excluded.status`,
-		a.ID, a.OwnerID, a.Spender, a.Kind, a.Asset, decStr(a.PerPayment), decStr(a.WindowCap),
+		a.ID, a.OwnerID, a.Spender, a.Kind, a.Asset, a.Network, decStr(a.PerPayment), decStr(a.WindowCap),
 		decStr(a.Used), a.Cycle, exp, a.Recipients, a.Template, a.WalletKind, a.ChainTx, a.Status, a.Note)
 	return err
 }
