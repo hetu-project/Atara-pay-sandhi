@@ -8,4 +8,7 @@ docs/contracts/lib/
 contracts/out/
 contracts/cache/
 contracts/broadcast/
+contracts/node_modules/
+contracts/artifacts/
+contracts/types/
 .env

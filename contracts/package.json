@@ -1,0 +1,17 @@
+{
+  "name": "atara-contracts",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "hardhat compile",
+    "deploy": "hardhat compile && tsx scripts/deploy.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "hardhat": "^3.4.5",
+    "tsx": "^4.19.2",
+    "typescript": "~5.8.0",
+    "viem": "^2.50.4"
+  }
+}

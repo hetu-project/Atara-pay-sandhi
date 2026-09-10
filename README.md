@@ -28,15 +28,20 @@ make clean      # 只删不起
 要让钱真的进托管合约，得先把合约部到一条链上。
 
 ```bash
-cp .env.example .env      # 填 RPC、私钥、已有的代币地址
-make chain-deploy         # 部 AtaraEscrow + AtaraSpending，打印要填回 .env 的几行
-make fresh-chain          # 删数据 + 连真链起
+cp .env.example .env                 # 填 RPC、私钥、已有的代币地址
+make chain-deploy                    # 演练：只检查，一笔交易都不发
+make chain-deploy A="send write"     # 真的部署，并把地址写回 .env
+make fresh-chain                     # 删数据 + 连真链起
 ```
 
-`make chain-deploy` 需要 foundry（`curl -L https://foundry.paradigm.xyz | bash && foundryup`）。
-它会先把该问的问清楚再花 gas：节点通不通、chainId 是几、部署者余额够不够、
-给的代币地址上到底有没有合约、精度是多少。**地址填错照样部署成功，
-等到挂单锁币那一刻才炸，那时错误信息只会说 call reverted。**
+用 Hardhat + viem（`contracts/` 里自带 package.json，第一次会自动 npm install），
+**不需要 foundry**。合约的 Foundry 测试还留着，装了 forge 的人照跑。
+
+**默认是演练**：这个命令会往链上发不可撤销的交易、花掉真的 gas，默认发交易
+意味着敲错一次就多一份没人管的合约。演练会把该问的都问清楚：节点通不通、
+chainId 是几、部署者余额够不够、给的代币地址上到底有没有合约、精度是多少。
+**地址填错照样能部署成功，等到挂单锁币那一刻才炸，那时错误信息只会说
+call reverted。**
 
 `ATARA_TOKEN_USDT` / `ATARA_TOKEN_USDC` 填了就用现成的，留空就新部一个测试币。
 

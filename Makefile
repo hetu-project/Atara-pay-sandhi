@@ -73,8 +73,16 @@ chain-up:  ## 起本地测试链（chainId 97，与 BSC 测试网一致）
 	@anvil --chain-id 97 --silent > /tmp/anvil.log 2>&1 &
 	@sleep 2 && echo "anvil on :8545"
 
-chain-deploy:  ## 部署托管合约，输出填进 .env（参数全从 .env 读）
-	@./scripts/deploy-chain.sh
+# 用 Hardhat + viem，不需要 foundry。参数全从 .env 读。
+#
+#   make chain-deploy              演练：只检查，一笔交易都不发
+#   make chain-deploy A="send"     真的部署
+#   make chain-deploy A="send write"  部署完把地址写回 .env
+#
+# 默认演练是故意的：这个目标会往链上发不可撤销的交易、花掉真的 gas。
+chain-deploy:  ## 部署托管合约（默认演练，A="send" 才真发）
+	@cd contracts && [ -d node_modules ] || npm install
+	@cd contracts && npx hardhat compile && npx tsx scripts/deploy.ts $(A)
 
 chain-e2e:  ## 真链端到端：钱进合约、签证明、合约验签放款
 	@python3 scripts/chain-e2e.py
