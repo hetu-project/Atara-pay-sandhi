@@ -71,6 +71,12 @@ func (c *Chain) EscrowAddress(asset string) (string, string) {
 
 func (c *Chain) SpendingAddress() string { return spendingAddr }
 
+// Info 在 mock 下只报 impl。合约地址一律留空——这条链上没有合约，
+// 编一个地址出来，前端会拿着它去 approve，钱就真的没了。
+func (c *Chain) Info(ctx context.Context) chain.Info {
+	return chain.Info{Impl: "mock", Network: "mock", Tokens: map[string]chain.Token{}}
+}
+
 // ExplorerURL 在 mock 下返回空串：这条链不存在，给一个 etherscan 链接
 // 只会把人带到「查无此地址」的页面，比不给链接更让人怀疑是不是坏了。
 func (c *Chain) ExplorerURL(asset, address string) string {

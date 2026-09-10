@@ -26,6 +26,7 @@ func (h *Handler) Router() http.Handler {
 		r.Route("/catalog", func(r chi.Router) {
 			r.Get("/assets", h.Assets)
 			r.Get("/fiats", h.Fiats)
+			r.Get("/chain", h.Chain)
 			r.Get("/conditions", h.Conditions)
 			r.Get("/intents", h.Intents)
 		})

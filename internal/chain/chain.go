@@ -52,7 +52,35 @@ const (
 	ViaExternal FundingVia = "external"
 )
 
+// Info 是前端要自己发交易时需要知道的一切：该在哪条网络上、
+// approve 给谁、锁进哪个合约、代币合约是哪个、精度多少。
+//
+// 非托管这条路上这些不能写死在前端：合约换一次地址，前端就会把钱
+// approve 给一个旧合约。所以由链层报出来，接口发下去。
+type Info struct {
+	// Impl 是 mock 还是 evm。mock 下面所有地址都是空的——那条链上没有
+	// 合约可调，前端据此知道「这一版不发交易」，而不是拿着空地址去调。
+	Impl     string           `json:"impl"`
+	Network  string           `json:"network"`
+	ChainID  int64            `json:"chain_id"`
+	RPCURL   string           `json:"rpc_url"`
+	Explorer string           `json:"explorer"`
+	Escrow   string           `json:"escrow"`
+	Spending string           `json:"spending"`
+	Tokens   map[string]Token `json:"tokens"`
+}
+
+// Token 是一种币在这条链上的合约。
+type Token struct {
+	Address string `json:"address"`
+	// Decimals 从合约读，不猜：BSC 上稳定币是 18 位，以太坊上是 6 位，
+	// 猜错金额差 10^12。读不到时给 0，前端自己去合约读一次。
+	Decimals int `json:"decimals"`
+}
+
 type Chain interface {
+	// Info 报出前端发交易要用的网络与合约地址。
+	Info(ctx context.Context) Info
 	// EscrowAddress 返回某币种的托管合约地址与所在网络。
 	EscrowAddress(asset string) (address, network string)
 	// SpendingAddress 是外部钱包 approve 额度的目标合约。

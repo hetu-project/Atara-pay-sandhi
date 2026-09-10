@@ -260,6 +260,26 @@ func (c *Chain) EscrowAddress(string) (string, string) {
 	return c.escrow.Hex(), c.cfg.Network
 }
 
+// Info 报出前端自己发交易要用的那几个地址。
+//
+// 精度从合约读（有缓存）。读不到就留 0——报一个猜的数比留空危险得多：
+// 前端会拿它算金额，BSC 是 18 位、以太坊是 6 位，猜错差 10^12。
+func (c *Chain) Info(ctx context.Context) chain.Info {
+	toks := map[string]chain.Token{}
+	for code, addr := range c.cfg.Tokens {
+		t := chain.Token{Address: addr}
+		if d, err := c.tokenDecimals(ctx, code); err == nil {
+			t.Decimals = int(d)
+		}
+		toks[strings.ToUpper(code)] = t
+	}
+	return chain.Info{
+		Impl: "evm", Network: c.cfg.Network, ChainID: c.chainID.Int64(),
+		RPCURL: c.cfg.RPCURL, Explorer: c.cfg.ExplorerBase,
+		Escrow: c.escrow.Hex(), Spending: c.SpendingAddress(), Tokens: toks,
+	}
+}
+
 func (c *Chain) SpendingAddress() string {
 	if c.spending == (common.Address{}) {
 		return ""

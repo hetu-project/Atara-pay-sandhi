@@ -109,9 +109,7 @@ func (s *Service) Connect(ctx context.Context, method, address, email, name stri
 // demoBalances 是新开的演示账户拿到的币，与种子里 Demo 用户那份一致。
 var demoBalances = [][2]string{{"USDT", "34500"}, {"USDC", "1200"}}
 
-// crediter 是「能凭空记一笔余额」的链。只有 mockchain 实现它——
-// 真链没有这个方法，所以下面那段在真链上根本编译不进任何行为，
-// 不用担心哪天配错环境把演示余额发到主网上。
+// crediter 是「能凭空记一笔余额」的链。
 type crediter interface {
 	Credit(ctx context.Context, address, asset string, amt decimal.Decimal) error
 }
@@ -124,6 +122,12 @@ type crediter interface {
 // 发不出去不挡登录：账户已经建好了，为了发币把登录整个失败掉更糟——
 // 余额是演示用的方便，身份不是。
 func (s *Service) fundDemoAccount(ctx context.Context, address string) {
+	// 只在 mock 链上发。原来只做接口断言，那不够：evmchain 也实现了
+	// Credit（它去调代币的 mint），于是接到真链之后每次有人登录，
+	// 后端都会试着铸币——币不是我们发的就一路 revert，是我们发的就更糟。
+	if s.Cfg.ChainImpl != "mock" {
+		return
+	}
 	c, ok := s.Ch.(crediter)
 	if !ok {
 		return

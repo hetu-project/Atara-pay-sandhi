@@ -1,4 +1,4 @@
-.PHONY: run fresh build test fmt vet clean smoke
+.PHONY: run run-chain fresh fresh-chain build test fmt vet clean smoke
 
 # 库和上传目录在这里写一次，run / clean / fresh 都用它。
 #
@@ -14,8 +14,17 @@ PORT     = $(lastword $(subst :, ,$(ADDR)))
 ENV = ATARA_DB_PATH=$(DB) ATARA_UPLOAD_DIR=$(UPLOADS) \
       ATARA_HTTP_ADDR=$(ADDR) ATARA_CORS_ORIGINS=$(WEB)
 
-run:            ## 起服务（保留现有数据）
+run:            ## 起服务（保留现有数据，mock 链）
 	$(ENV) go run ./cmd/atara-pay
+
+# .env 只有这两个目标会读。run / fresh 不读是故意的：那两个是演示用的
+# mock 链，读了 .env 就会连真链，RPC 一不通后端直接起不来——
+# 而人只是想开个演示。要连链就明说，走这两个目标。
+run-chain:      ## 起服务，连 .env 里配的真链（保留现有数据）
+	set -a && . ./.env && set +a && $(ENV) go run ./cmd/atara-pay
+
+fresh-chain: clean  ## 删数据 + 连真链起
+	set -a && . ./.env && set +a && $(ENV) go run ./cmd/atara-pay
 
 fresh: clean    ## 删掉全部历史数据再起——每次从零开始
 	@echo "== 空库启动：16 个种子用户 + 10 条挂单，没有任何 KYC 记录 =="
@@ -64,10 +73,8 @@ chain-up:  ## 起本地测试链（chainId 97，与 BSC 测试网一致）
 	@anvil --chain-id 97 --silent > /tmp/anvil.log 2>&1 &
 	@sleep 2 && echo "anvil on :8545"
 
-chain-deploy:  ## 部署托管合约与两个测试稳定币，输出填进 .env
-	@cd contracts && PRIVATE_KEY=$${ATARA_SIGNER_KEY:?set ATARA_SIGNER_KEY} \
-	  forge script script/Deploy.s.sol --rpc-url $${ATARA_RPC_URL:-http://127.0.0.1:8545} \
-	  --broadcast 2>&1 | grep -E '^  ATARA_' | sed 's/^  //'
+chain-deploy:  ## 部署托管合约，输出填进 .env（参数全从 .env 读）
+	@./scripts/deploy-chain.sh
 
 chain-e2e:  ## 真链端到端：钱进合约、签证明、合约验签放款
 	@python3 scripts/chain-e2e.py

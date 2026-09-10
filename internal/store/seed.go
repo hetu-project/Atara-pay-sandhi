@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log"
 	"strings"
 
 	"github.com/advaita/atara-pay/internal/chain"
@@ -194,9 +195,16 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 	}
 
 	// 链上动作在事务之外：跟链之间没有分布式事务。
+	//
+	// 链上失败不阻止启动。演示数据本来就是「凭空发币」，接到一条真链上
+	// 多半会被拒——币不是我们发的、签名方不是 minter、余额不够 gas，
+	// 都很正常。为这个 Fatal 掉，等于换到真链就再也起不来。
+	// 失败要说清楚是哪一条：种子挂单会以「未锁币」的状态存在，
+	// 界面上可成交量就是 0，那比假装锁了诚实，但得让人知道为什么。
 	for _, c := range credits {
 		if err := ch.Credit(ctx, c.addr, c.asset, dec(c.amount)); err != nil {
-			return err
+			log.Printf("seed: 给 %s 发 %s %s 失败（种子余额缺这一笔）：%v",
+				c.addr, c.amount, c.asset, err)
 		}
 	}
 	for _, g := range grants {
@@ -212,7 +220,8 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 		}
 		txh, err := ch.GrantAllowance(ctx, ag)
 		if err != nil {
-			return err
+			log.Printf("seed: 额度 %s 上链失败（这份额度只有平台侧记录）：%v", g.id, err)
+			continue
 		}
 		if txh != "" {
 			if _, err := s.db.ExecContext(ctx,
@@ -224,7 +233,9 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 	for _, l := range locks {
 		tx, err := ch.LockListing(ctx, l.offerID, l.addr, l.asset, dec(l.qty))
 		if err != nil {
-			return err
+			log.Printf("seed: 挂单 %s 锁 %s %s 失败（这条单没有锁币）：%v",
+				l.offerID, l.qty, l.asset, err)
+			continue
 		}
 		if _, err := s.db.ExecContext(ctx, `update offers set lock_tx=? where id=?`, tx, l.offerID); err != nil {
 			return err

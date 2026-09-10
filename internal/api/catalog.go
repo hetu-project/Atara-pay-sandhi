@@ -15,6 +15,18 @@ func (h *Handler) Fiats(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"corridors": money.Corridors()})
 }
 
+// Chain 报出前端自己发交易要用的网络与合约地址。
+//
+// 为什么由接口发而不是写在前端：合约换一次地址，写死的前端就会把钱
+// approve 给一个旧合约，而且要等到锁币那一刻才发现。地址的权威在部署
+// 那一侧，前端每次现问。
+//
+// mock 下所有地址都是空的——那条链上没有合约可调。前端据此知道这一版
+// 不发交易，而不是拿着空地址去调用。
+func (h *Handler) Chain(w http.ResponseWriter, r *http.Request) {
+	ok(w, h.Svc.Ch.Info(r.Context()))
+}
+
 // Conditions 把条件原子的定义与联动选项发给前端，
 // 免得「换数据源要重置指标」这种规则在两端各写一份。
 func (h *Handler) Conditions(w http.ResponseWriter, r *http.Request) {

@@ -22,6 +22,42 @@ make smoke
 make clean      # 只删不起
 ```
 
+## 接真链
+
+默认跑 mock 链：合约动作记在本地 SQLite 里，不发交易、不需要钱包。
+要让钱真的进托管合约，得先把合约部到一条链上。
+
+```bash
+cp .env.example .env      # 填 RPC、私钥、已有的代币地址
+make chain-deploy         # 部 AtaraEscrow + AtaraSpending，打印要填回 .env 的几行
+make fresh-chain          # 删数据 + 连真链起
+```
+
+`make chain-deploy` 需要 foundry（`curl -L https://foundry.paradigm.xyz | bash && foundryup`）。
+它会先把该问的问清楚再花 gas：节点通不通、chainId 是几、部署者余额够不够、
+给的代币地址上到底有没有合约、精度是多少。**地址填错照样部署成功，
+等到挂单锁币那一刻才炸，那时错误信息只会说 call reverted。**
+
+`ATARA_TOKEN_USDT` / `ATARA_TOKEN_USDC` 填了就用现成的，留空就新部一个测试币。
+
+**`run` / `fresh` 不读 `.env`，`run-chain` / `fresh-chain` 才读。** 这是故意的：
+前两个是演示用的 mock 链，读了 `.env` 就会去连真链，RPC 一不通后端直接起不来，
+而人往往只是想开个演示。
+
+合约地址不写进前端，由 `GET /api/v1/catalog/chain` 发下去：
+
+```json
+{ "impl": "evm", "network": "BSC-TESTNET", "chain_id": 97,
+  "rpc_url": "…", "explorer": "…",
+  "escrow": "0x…", "spending": "0x…",
+  "tokens": { "USDT": { "address": "0x…", "decimals": 18 } } }
+```
+
+前端据此知道该在哪条网络上、approve 给谁、锁进哪个合约。写死在前端的话，
+合约换一次地址，前端就会把钱 approve 给一个旧合约，而且要等到锁币那一刻
+才发现。mock 下这些地址一律为空——那条链上没有合约可调，前端据此知道
+这一版不发交易。
+
 - **钱直接进托管合约**，从不经过 Atara。放款与退回都是合约动作。
 - **法币不入账**：法币点对点走银行，平台只核验回执。
 
