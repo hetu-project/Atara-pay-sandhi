@@ -284,3 +284,29 @@ create table if not exists confirmations (
   consumed_at text
 );
 create index if not exists idx_confirmations_expiry on confirmations(expires_at);
+
+-- 合约部署记录。前端要自己发交易，就得知道 approve 给谁、锁进哪个合约、
+-- 代币合约是哪个——这些从这里发下去，不是写死在前端，也不是每次从 env 现读。
+--
+-- 一条链一行。留着历史行是有意的：换过一次合约之后，旧地址还能查到，
+-- 排查「这笔钱当时打进了哪个合约」时那一行就是答案。
+create table if not exists chain_deployments (
+  network       text primary key,
+  chain_id      integer not null default 0,
+  impl          text not null default 'evm',
+  rpc_url       text not null default '',
+  explorer      text not null default '',
+  escrow_addr   text not null default '',
+  spending_addr text not null default '',
+  updated_at    text not null
+);
+
+-- 代币合约。精度必须存下来：BSC 上稳定币 18 位、以太坊上 6 位，
+-- 前端拿它算金额，猜错差 10^12。
+create table if not exists chain_tokens (
+  network  text not null references chain_deployments(network),
+  asset    text not null,
+  address  text not null,
+  decimals integer not null default 0,
+  primary key (network, asset)
+);

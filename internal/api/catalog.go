@@ -4,7 +4,9 @@ import (
 	"net/http"
 
 	"github.com/advaita/atara-pay/internal/domain/condition"
+	"github.com/advaita/atara-pay/internal/httpx"
 	"github.com/advaita/atara-pay/internal/money"
+	"github.com/advaita/atara-pay/internal/store"
 )
 
 func (h *Handler) Assets(w http.ResponseWriter, r *http.Request) {
@@ -18,13 +20,28 @@ func (h *Handler) Fiats(w http.ResponseWriter, r *http.Request) {
 // Chain 报出前端自己发交易要用的网络与合约地址。
 //
 // 为什么由接口发而不是写在前端：合约换一次地址，写死的前端就会把钱
-// approve 给一个旧合约，而且要等到锁币那一刻才发现。地址的权威在部署
-// 那一侧，前端每次现问。
+// approve 给一个旧合约，而且要等到锁币那一刻才发现。
 //
-// mock 下所有地址都是空的——那条链上没有合约可调。前端据此知道这一版
-// 不发交易，而不是拿着空地址去调用。
+// 读的是库里 chain_deployments 那一行，不是当场问链或读环境变量。那一行
+// 是后端启动时按自己实际在用的配置写进去的，所以「前端看到的地址」与
+// 「后端真正在说话的合约」是同一份。环境变量只是部署输出的落点，不该是
+// 对外的答案——进程之间、机器之间它可能不一样。
+//
+// 查不到记录说明这一版跑的是 mock 链：那条链上没有合约可调，回一份空的，
+// 前端据此知道不发交易，而不是拿着空地址去调用。
 func (h *Handler) Chain(w http.ResponseWriter, r *http.Request) {
-	ok(w, h.Svc.Ch.Info(r.Context()))
+	d, err := h.St.ChainDeployment(r.Context(), h.Cfg.Chain.Network)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if d == nil {
+		ok(w, store.ChainDeployment{
+			Impl: "mock", Network: "mock", Tokens: map[string]store.ChainToken{},
+		})
+		return
+	}
+	ok(w, d)
 }
 
 // Conditions 把条件原子的定义与联动选项发给前端，
