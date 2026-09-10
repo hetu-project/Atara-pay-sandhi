@@ -35,7 +35,7 @@ func demoTimings() Timings {
 		OTCS3: 10 * time.Minute, OTCTheirPay: 10 * time.Second,
 		OTCVerify: 90 * time.Second,
 		OTCS4:     4 * time.Second, Dispute: 15 * time.Second, Fallback: 60 * time.Second,
-		CondSettle: 5 * time.Second, MakerReview: 5 * time.Second,
+		CondSettle: 5 * time.Second, MakerReview: 10 * time.Second,
 	}
 }
 
