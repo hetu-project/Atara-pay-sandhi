@@ -134,7 +134,11 @@ type Order struct {
 
 	// 地址是放款的目的地。非托管下钱打给地址，不是打给某个平台账户。
 	OwnerAddr string
-	PayeeAddr string
+
+	// TrustScore 是下单那一刻算出来的风控评分（60–99）。算法见 app/score.go。
+	// 存下来不重算：评分是对当时的判断，不该跟着后来的事变。
+	TrustScore int `json:"trust_score"`
+	PayeeAddr  string
 
 	// 链上事实。这几个字段是从 chain.Chain 读回来的快照，不是平台自己的账。
 	FundingVia    string

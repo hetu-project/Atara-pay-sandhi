@@ -73,11 +73,15 @@ func (s *Service) CreateConditional(ctx context.Context, ownerID, confirmToken s
 	c := condition.Compile(req.Conditions, req.FallbackDays)
 	addr, net := s.Ch.EscrowAddress(req.Asset)
 	now := time.Now().UTC()
+	id := store.NewID()
+	// 条件支付同样在下单那一刻算一次分并存下来。
+	peerProfile, _ := s.St.Merchant(ctx, req.CounterpartyID)
 	o := &order.Order{
-		ID: store.NewID(), Ref: Ref(), Kind: order.ConditionalTransfer,
+		ID: id, Ref: Ref(), Kind: order.ConditionalTransfer,
 		OwnerID: ownerID, CounterpartyID: req.CounterpartyID,
 		Asset: req.Asset, Amount: amt.Value, Note: req.Note, AllowanceID: allowID,
-		State: order.Fund, CreatedAt: now, UpdatedAt: now,
+		TrustScore: ScoreOrder(id, peerProfile, amt.USD()),
+		State:      order.Fund, CreatedAt: now, UpdatedAt: now,
 		EscrowAddr: addr, EscrowNetwork: net,
 		Cond: &order.Conditional{
 			Main: c.Main, WaitingOn: c.Waiting, Text: c.Text,

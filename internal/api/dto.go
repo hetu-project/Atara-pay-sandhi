@@ -102,6 +102,9 @@ type orderJSON struct {
 	OTC         *otcJSON    `json:"otc,omitempty"`
 	Events      []order.Log `json:"events,omitempty"`
 	CreatedAt   time.Time   `json:"created_at"`
+	// TrustScore 是下单那一刻算出来的风控评分（60–99）。存在工单上，
+	// 每次拉取原样发出去，不重算——重算的话历史单的分会跟着后来的事变。
+	TrustScore int `json:"trust_score"`
 }
 
 type condJSON struct {
@@ -146,7 +149,7 @@ func (h *Handler) toOrder(ctx context.Context, viewerID string, o *order.Order, 
 		ID: o.ID, Ref: o.Ref, Kind: string(o.Kind), State: string(o.State),
 		Terminal: string(o.Terminal), Amount: amt(o.Amount, o.Asset), Note: o.Note,
 		PeerID: o.CounterpartyID, AllowanceID: o.AllowanceID, Deadline: o.StateDeadline,
-		Rail: rail(o), CreatedAt: o.CreatedAt,
+		Rail: rail(o), TrustScore: o.TrustScore, CreatedAt: o.CreatedAt,
 	}
 	if o.StateDeadline != nil {
 		if d := int(time.Until(*o.StateDeadline).Seconds()); d > 0 {

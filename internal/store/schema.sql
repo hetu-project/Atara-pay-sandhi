@@ -104,6 +104,9 @@ create table if not exists orders (
   escrow_tx       text not null default '',
   escrow_addr     text not null default '',
   escrow_network  text not null default '',
+  -- 下单那一刻算出来的风控评分，之后只读不重算。见 app/score.go：
+  -- 重算的话历史单的分会跟着后来的事变，那就不是「当时的判断」了。
+  trust_score     integer not null default 0,
   created_at      text not null,
   updated_at      text not null
 );

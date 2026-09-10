@@ -368,11 +368,15 @@ func (s *Service) Take(ctx context.Context, takerID, offerID string, req TakeReq
 	}
 
 	now := time.Now().UTC()
+	id := store.NewID()
+	// 下单那一刻算一次分，存进工单。之后只读——见 app/score.go 里的说明。
+	peer, _ := s.St.Merchant(ctx, o.MakerID)
 	ord := &order.Order{
-		ID: store.NewID(), Ref: Ref(), Kind: order.OTCTake,
+		ID: id, Ref: Ref(), Kind: order.OTCTake,
 		OwnerID: takerID, CounterpartyID: o.MakerID,
 		Asset: o.Asset, Amount: coinQty, AllowanceID: req.AllowanceID,
-		State: order.Match, CreatedAt: now, UpdatedAt: now,
+		TrustScore: ScoreOrder(id, peer, money.New(coinQty, o.Asset).USD()),
+		State:      order.Match, CreatedAt: now, UpdatedAt: now,
 		OTC: &order.OTC{
 			OfferID: o.ID, Side: takerSide, UnitPrice: o.UnitPrice,
 			FiatCode: o.Fiat, FiatAmount: fiatAmt, Network: req.Network,

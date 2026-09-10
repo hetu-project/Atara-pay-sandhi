@@ -11,15 +11,16 @@ import (
 )
 
 const orderCols = `id,ref,kind,owner_id,counterparty_id,asset_code,amount,note,allowance_id,
-	state,terminal,state_deadline,funding_via,escrow_tx,escrow_addr,escrow_network,created_at,updated_at`
+	state,terminal,state_deadline,funding_via,escrow_tx,escrow_addr,escrow_network,trust_score,
+	created_at,updated_at`
 
 func (s *Store) InsertOrder(tx *sql.Tx, o *order.Order) error {
 	if _, err := tx.Exec(
-		`insert into orders(`+orderCols+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`insert into orders(`+orderCols+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		o.ID, o.Ref, o.Kind, o.OwnerID, emptyToNull(o.CounterpartyID), o.Asset, decStr(o.Amount),
 		o.Note, emptyToNull(o.AllowanceID), o.State, emptyToNull(string(o.Terminal)),
 		nullTS(o.StateDeadline), o.FundingVia, o.EscrowTx, o.EscrowAddr, o.EscrowNetwork,
-		ts(o.CreatedAt), ts(o.UpdatedAt)); err != nil {
+		o.TrustScore, ts(o.CreatedAt), ts(o.UpdatedAt)); err != nil {
 		return err
 	}
 	if o.Cond != nil {
@@ -113,7 +114,7 @@ func scanOrder(scan func(...any) error) (*order.Order, error) {
 	var amount, created, updated string
 	if err := scan(&o.ID, &o.Ref, &o.Kind, &o.OwnerID, &cp, &o.Asset, &amount, &o.Note, &card,
 		&o.State, &term, &deadline, &o.FundingVia, &o.EscrowTx, &o.EscrowAddr, &o.EscrowNetwork,
-		&created, &updated); err != nil {
+		&o.TrustScore, &created, &updated); err != nil {
 		return nil, err
 	}
 	o.CounterpartyID, o.AllowanceID = nullStr(cp), nullStr(card)
