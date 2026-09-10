@@ -32,7 +32,49 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	if err := addColumns(ctx, db); err != nil {
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// addColumns 给已经存在的表补新列。
+//
+// schema.sql 用的是 create table if not exists——对新库够用，但老库不会因此
+// 长出新字段。SQLite 又没有 add column if not exists，所以先问一遍 table_info。
+// 不做这一步的话，部署到已有数据的机器上会在第一次查询时才炸，
+// 而那时错误信息只是「no such column」，看不出是漏了迁移。
+func addColumns(ctx context.Context, db *sql.DB) error {
+	want := []struct{ table, col, decl string }{
+		{"withdrawals", "to_address", "text not null default ''"},
+		{"withdrawals", "to_chain", "text not null default ''"},
+	}
+	for _, w := range want {
+		rows, err := db.QueryContext(ctx, "select name from pragma_table_info(?)", w.table)
+		if err != nil {
+			return err
+		}
+		has := false
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err != nil {
+				rows.Close()
+				return err
+			}
+			if n == w.col {
+				has = true
+			}
+		}
+		rows.Close()
+		if has {
+			continue
+		}
+		if _, err := db.ExecContext(ctx,
+			fmt.Sprintf("alter table %s add column %s %s", w.table, w.col, w.decl)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }

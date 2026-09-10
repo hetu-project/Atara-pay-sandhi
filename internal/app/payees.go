@@ -42,10 +42,14 @@ func (s *Service) AddPayee(ctx context.Context, ownerID string, req AddPayeeReq)
 	return &p, nil
 }
 
-// WithdrawReq 是前端四步提现一次性提交的内容：
-// 地址（收款方）→ 金额 → 用途 → 凭证。
+// WithdrawReq 是一次转账的内容：转什么、转多少、转到哪儿。
+//
+// 收款方两种给法：登记过的填 PayeeID，没登记的直接给 ToAddress + ToChain。
+// 后者是常态——非托管的转账本来就允许打给任意地址，强制先登记是托管所的规矩。
 type WithdrawReq struct {
 	PayeeID     string `json:"payee_id"`
+	ToAddress   string `json:"to_address"`
+	ToChain     string `json:"to_chain"`
 	Asset       string `json:"asset"`
 	Amount      string `json:"amount"`
 	Purpose     string `json:"purpose"`
@@ -59,14 +63,18 @@ type WithdrawReq struct {
 // 即便平台不动手，这一步仍要签名档的令牌，不是承诺档。
 func (s *Service) CreateWithdrawal(ctx context.Context, ownerID, confirmToken string,
 	req WithdrawReq) (*store.Withdrawal, error) {
-	if req.PayeeID == "" {
-		return nil, httpx.Fail(http.StatusUnprocessableEntity, "PAYEE_REQUIRED", "payee_id",
-			"pick who you are withdrawing to")
-	}
-	payee, ok := s.St.Payee(ctx, ownerID, req.PayeeID)
-	if !ok {
-		return nil, httpx.Fail(http.StatusUnprocessableEntity, "PAYEE_REQUIRED", "payee_id",
-			"no such payee in your address book")
+	// 收款方：登记过的按 id 取，没登记的直接收地址。
+	label, chain, addr := "", strings.TrimSpace(req.ToChain), strings.TrimSpace(req.ToAddress)
+	if req.PayeeID != "" {
+		payee, ok := s.St.Payee(ctx, ownerID, req.PayeeID)
+		if !ok {
+			return nil, httpx.Fail(http.StatusUnprocessableEntity, "PAYEE_REQUIRED", "payee_id",
+				"no such payee in your address book")
+		}
+		label, chain, addr = payee.Label, payee.Chain, payee.Address
+	} else if addr == "" {
+		return nil, httpx.Fail(http.StatusUnprocessableEntity, "ADDRESS_REQUIRED", "to_address",
+			"paste the address you are sending to")
 	}
 	if req.Asset == "" {
 		return nil, httpx.Fail(http.StatusUnprocessableEntity, "ASSET_REQUIRED", "asset",
@@ -86,18 +94,17 @@ func (s *Service) CreateWithdrawal(ctx context.Context, ownerID, confirmToken st
 		return nil, httpx.Fail(http.StatusUnprocessableEntity, "AMOUNT_INVALID", "amount",
 			"amount must be greater than zero")
 	}
-	if strings.TrimSpace(req.Purpose) == "" {
-		return nil, httpx.Fail(http.StatusUnprocessableEntity, "PURPOSE_REQUIRED", "purpose",
-			"say what this payment is for — the receiving bank will ask")
-	}
 	if err := s.Confirm.Consume(ctx, confirmToken, ownerID,
-		Digest("withdraw", req.PayeeID, req.Asset, amt.String()), auth.GradeSignature); err != nil {
+		Digest("withdraw", addr, req.Asset, amt.String()), auth.GradeSignature); err != nil {
 		return nil, err
+	}
+	if label == "" {
+		label = shortAddr(addr)
 	}
 	w := store.Withdrawal{ID: store.NewID(), OwnerID: ownerID, PayeeID: req.PayeeID,
 		Asset: req.Asset, Amount: amt, Purpose: req.Purpose, DocUploadID: req.DocUploadID,
 		State: "submitted", CreatedAt: store.Now(), UpdatedAt: store.Now(),
-		PayeeLabel: payee.Label, PayeeChain: payee.Chain, PayeeAddress: payee.Address}
+		PayeeLabel: label, PayeeChain: chain, PayeeAddress: addr}
 	if err := s.St.InsertWithdrawal(ctx, w); err != nil {
 		return nil, err
 	}

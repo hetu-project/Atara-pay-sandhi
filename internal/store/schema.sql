@@ -214,10 +214,18 @@ create table if not exists payees (
 create table if not exists withdrawals (
   id            text primary key,
   owner_id      text not null references users(id),
-  payee_id      text not null references payees(id),
+  -- 可空：非托管的转账本来就允许打给任意地址，不强制先登记。
+  -- 必须是 NULL 而不是空串——SQLite 的外键只豁免 NULL，空串照样去 payees
+  -- 里找一行 id='' 然后失败。登记过的填 payee_id，没登记的把地址记在
+  -- to_address / to_chain 上。
+  payee_id      text references payees(id),
+  to_address    text not null default '',
+  to_chain      text not null default '',
   asset_code    text not null,
   amount        text not null,
-  purpose       text not null,
+  -- 用途不再强制：那是托管所的提币流程要的。钱不在我们手里，
+  -- 我们既拦不住这笔转账，也没有立场问「为什么转」。
+  purpose       text not null default '',
   doc_upload_id text not null default '',
   tx_hash       text not null default '',
   state         text not null default 'draft'

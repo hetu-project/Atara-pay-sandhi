@@ -101,21 +101,36 @@ func (s *Store) DeletePayee(ctx context.Context, ownerID, id string) error {
 
 func (s *Store) InsertWithdrawal(ctx context.Context, w Withdrawal) error {
 	_, err := s.db.ExecContext(ctx,
-		`insert into withdrawals(id,owner_id,payee_id,asset_code,amount,purpose,
-		                         doc_upload_id,tx_hash,state,created_at,updated_at)
-		 values(?,?,?,?,?,?,?,?,?,?,?)`,
-		w.ID, w.OwnerID, w.PayeeID, w.Asset, w.Amount.String(), w.Purpose,
+		`insert into withdrawals(id,owner_id,payee_id,to_address,to_chain,asset_code,amount,
+		                         purpose,doc_upload_id,tx_hash,state,created_at,updated_at)
+		 values(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		w.ID, w.OwnerID, nullIfEmpty(w.PayeeID), w.PayeeAddress, w.PayeeChain,
+		w.Asset, w.Amount.String(), w.Purpose,
 		w.DocUploadID, w.TxHash, w.State, ts(w.CreatedAt), ts(w.UpdatedAt))
 	return err
 }
 
+// nullIfEmpty 让空字符串以 NULL 落库。外键只豁免 NULL——写空串会被当成
+// 「引用一行 id='' 的 payees」，直接违反约束。
+func nullIfEmpty(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
 func (s *Store) Withdrawals(ctx context.Context, ownerID string) ([]Withdrawal, error) {
 	rows, err := s.db.QueryContext(ctx,
+		/* left join 而不是 join：打给陌生地址的那些没有 payees 行，
+		   内连接会把它们从列表里整个抹掉——转出去的钱在记录里查不到，
+		   是比看不到标签严重得多的问题。没有登记行就用转账自己存的地址。 */
 		`select w.id,w.owner_id,w.payee_id,w.asset_code,w.amount,w.purpose,
 		        w.doc_upload_id,w.tx_hash,w.state,w.created_at,w.updated_at,
-		        p.label,p.chain,p.address
+		        coalesce(nullif(p.label,''), w.to_address),
+		        coalesce(nullif(p.chain,''), w.to_chain),
+		        coalesce(nullif(p.address,''), w.to_address)
 		   from withdrawals w
-		   join payees p on p.id = w.payee_id
+		   left join payees p on p.id = w.payee_id
 		  where w.owner_id=? order by w.created_at desc`, ownerID)
 	if err != nil {
 		return nil, err
@@ -125,11 +140,13 @@ func (s *Store) Withdrawals(ctx context.Context, ownerID string) ([]Withdrawal, 
 	for rows.Next() {
 		var w Withdrawal
 		var amount, created, updated string
-		if err := rows.Scan(&w.ID, &w.OwnerID, &w.PayeeID, &w.Asset, &amount, &w.Purpose,
+		var pid sql.NullString
+		if err := rows.Scan(&w.ID, &w.OwnerID, &pid, &w.Asset, &amount, &w.Purpose,
 			&w.DocUploadID, &w.TxHash, &w.State, &created, &updated,
 			&w.PayeeLabel, &w.PayeeChain, &w.PayeeAddress); err != nil {
 			return nil, err
 		}
+		w.PayeeID = pid.String
 		// 金额全程走字符串与 decimal，不经 float——18 位精度下 float 会改尾数。
 		w.Amount, _ = decimal.NewFromString(amount)
 		w.CreatedAt, w.UpdatedAt = parseTS(created), parseTS(updated)
