@@ -17,9 +17,17 @@ type Scheduler struct {
 	Tick time.Duration
 }
 
-func New(svc *app.Service) *Scheduler { return &Scheduler{Svc: svc, Tick: time.Second} }
+// New 按配置定扫描节奏。接了真链是每分钟一次，mock 是每秒——
+// 见 config.SchedTick 那段注释。
+func New(svc *app.Service) *Scheduler {
+	return &Scheduler{Svc: svc, Tick: svc.Cfg.SchedTick}
+}
 
 func (s *Scheduler) Run(ctx context.Context) {
+	if s.Tick <= 0 {
+		s.Tick = time.Second
+	}
+	log.Printf("scheduler: 每 %s 扫一次到期工单", s.Tick)
 	t := time.NewTicker(s.Tick)
 	defer t.Stop()
 	for {

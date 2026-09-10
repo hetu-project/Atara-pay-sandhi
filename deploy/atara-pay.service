@@ -32,6 +32,8 @@ Environment=ATARA_CORS_ORIGINS=
 # 平台核验 2 小时，一笔单子当着人的面根本走不完，屏幕上只会停在
 # 「等待中」。要按真实时长跑，把这里改成 false。
 Environment=ATARA_DEMO_TIMING=true
+# 调度器扫描节奏。不配的话真链每分钟、mock 每秒。
+#Environment=ATARA_SCHED_TICK=1m
 
 ExecStart=/srv/atara/bin/atara-pay
 Restart=always

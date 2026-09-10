@@ -9,9 +9,11 @@ import (
 // Timings 是状态机各站的停留时长。
 // demo 用短值，真实口径写在注释里——两套值出自 console.html:4978。
 type Timings struct {
-	OTCMatch    time.Duration // 吃单后的软预留窗口（真实 10m）
-	OTCBind     time.Duration // 买方向查挂单锁仓并绑单——瞬时，不是一段等待
-	OTCS1       time.Duration // 对手方注资托管（真实 30m）
+	OTCMatch time.Duration // 吃单后的软预留窗口（真实 10m）
+	OTCBind  time.Duration // 买方向查挂单锁仓并绑单——瞬时，不是一段等待
+	OTCS1    time.Duration // 对手方注资托管（真实 30m）
+	// OTCS3 是你去银行把法币打出去的窗口。这是整条链路上唯一要人离开屏幕
+	// 去做一件事的地方，所以演示口径也不能压到几十秒——压了就只能演示「超时」。
 	OTCS3       time.Duration // 你的法币转账窗口（真实 4h）
 	OTCTheirPay time.Duration // 卖方向：等对方打法币。到点是对方付款，不是你逾期
 	// OTCVerify 是对方核验你回执的窗口。演示口径下它比别的站长得多（90s 而非几秒）：
@@ -29,7 +31,8 @@ type Timings struct {
 
 func demoTimings() Timings {
 	return Timings{
-		OTCMatch: 20 * time.Second, OTCBind: 2 * time.Second, OTCS1: 10 * time.Second, OTCS3: 24 * time.Second, OTCTheirPay: 10 * time.Second,
+		OTCMatch: 20 * time.Second, OTCBind: 2 * time.Second, OTCS1: 10 * time.Second,
+		OTCS3: 10 * time.Minute, OTCTheirPay: 10 * time.Second,
 		OTCVerify: 90 * time.Second,
 		OTCS4:     4 * time.Second, Dispute: 15 * time.Second, Fallback: 60 * time.Second,
 		CondSettle: 5 * time.Second, MakerReview: 5 * time.Second,
@@ -53,6 +56,14 @@ type Config struct {
 	UploadDir   string
 	CORSOrigins string
 	T           Timings
+
+	// SchedTick 是调度器多久扫一次到期的工单。
+	//
+	// 接了真链时这就是「多久去链上确认一次状态」。每秒扫一遍在真链上是浪费：
+	// 一次状态推进本身就要等区块（十几秒起），而且每次扫描都是若干次 RPC
+	// 往返，公共节点会限流。mock 链没有网络往返，链就是本地那张表，
+	// 所以那边保持每秒——演示要的是当场看到状态走完。
+	SchedTick time.Duration
 
 	// ChainImpl 选链实现：mock | evm。
 	// evm 需要下面这一组配得完整，缺一个就在启动时炸——
@@ -85,6 +96,7 @@ func Load() Config {
 		UploadDir:   env("ATARA_UPLOAD_DIR", "./var/uploads"),
 		CORSOrigins: env("ATARA_CORS_ORIGINS", "*"),
 		ChainImpl:   env("ATARA_CHAIN_IMPL", "mock"),
+		SchedTick:   envDur("ATARA_SCHED_TICK", 0),
 		Chain: ChainConfig{
 			RPCURL:       env("ATARA_RPC_URL", "http://127.0.0.1:8545"),
 			Escrow:       env("ATARA_ESCROW_ADDR", ""),
@@ -101,7 +113,27 @@ func Load() Config {
 	} else {
 		c.T = realTimings()
 	}
+	if c.SchedTick <= 0 {
+		c.SchedTick = time.Second
+		if c.ChainImpl != "mock" {
+			c.SchedTick = time.Minute
+		}
+	}
 	return c
+}
+
+// envDur 读一个时长，如 30s / 2m。解析不了就当没配——
+// 配错了悄悄用默认值比启动失败好：这个值只影响快慢，不影响对错。
+func envDur(k string, def time.Duration) time.Duration {
+	v := os.Getenv(k)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return d
 }
 
 func env(k, def string) string {
