@@ -268,6 +268,9 @@ create table if not exists maker_applications (
   submitted_at  text,
   reviewed_at   text,
   reviewer_id   text references users(id),
+  -- 演示用：到点自动放行。存时间戳而不是起一个睡 5 秒的 goroutine——
+  -- 进程重启后 goroutine 就没了，申请会永远卡在「审核中」。
+  auto_review_at text,
   updated_at    text not null
 );
 

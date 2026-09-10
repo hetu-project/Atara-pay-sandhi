@@ -23,19 +23,23 @@ type MakerApp struct {
 	ReviewerID   string     `json:"reviewer_id,omitempty"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 
+	// AutoReviewAt 到点后由 scheduler 放行。演示用——真实环境这里是人。
+	AutoReviewAt *time.Time `json:"-"`
+
 	// 待审列表要显示是谁在申请。
 	DisplayName string `json:"display_name,omitempty"`
 }
 
 const makerCols = `user_id,phase,kyc_done,kyc_ok,listing_done,approved,form_json,
-	reject_reason,submitted_at,reviewed_at,coalesce(reviewer_id,''),updated_at`
+	reject_reason,submitted_at,reviewed_at,coalesce(reviewer_id,''),updated_at,auto_review_at`
 
 func scanMakerApp(scan func(...any) error, extra ...any) (*MakerApp, error) {
 	var a MakerApp
 	var submitted, reviewed sql.NullString
 	var updated string
+	var auto sql.NullString
 	dest := []any{&a.UserID, &a.Phase, &a.KYCDone, &a.KYCOk, &a.ListingDone, &a.Approved,
-		&a.FormJSON, &a.RejectReason, &submitted, &reviewed, &a.ReviewerID, &updated}
+		&a.FormJSON, &a.RejectReason, &submitted, &reviewed, &a.ReviewerID, &updated, &auto}
 	dest = append(dest, extra...)
 	if err := scan(dest...); err != nil {
 		return nil, err
@@ -47,6 +51,10 @@ func scanMakerApp(scan func(...any) error, extra ...any) (*MakerApp, error) {
 	if reviewed.Valid {
 		t := parseTS(reviewed.String)
 		a.ReviewedAt = &t
+	}
+	if auto.Valid {
+		t := parseTS(auto.String)
+		a.AutoReviewAt = &t
 	}
 	a.UpdatedAt = parseTS(updated)
 	return &a, nil
@@ -68,11 +76,15 @@ func (s *Store) UpsertMakerApp(ctx context.Context, a MakerApp) error {
 	if a.KYCDone || a.ListingDone {
 		submitted = now
 	}
+	var auto any
+	if a.AutoReviewAt != nil {
+		auto = ts(*a.AutoReviewAt)
+	}
 	_, err := s.db.ExecContext(ctx,
 		`insert into maker_applications
 		   (user_id,phase,kyc_done,kyc_ok,listing_done,approved,form_json,
-		    reject_reason,submitted_at,updated_at)
-		 values(?,?,?,?,?,?,?,'',?,?)
+		    reject_reason,submitted_at,auto_review_at,updated_at)
+		 values(?,?,?,?,?,?,?,'',?,?,?)
 		 on conflict(user_id) do update set
 		   phase=excluded.phase,
 		   kyc_done=excluded.kyc_done,
@@ -82,9 +94,10 @@ func (s *Store) UpsertMakerApp(ctx context.Context, a MakerApp) error {
 		   form_json=excluded.form_json,
 		   reject_reason='',
 		   submitted_at=excluded.submitted_at,
+		   auto_review_at=excluded.auto_review_at,
 		   updated_at=excluded.updated_at`,
 		a.UserID, a.Phase, a.KYCDone, a.KYCOk, a.ListingDone, a.Approved,
-		nz(a.FormJSON), submitted, now)
+		nz(a.FormJSON), submitted, auto, now)
 	return err
 }
 
@@ -137,7 +150,7 @@ func (s *Store) PendingMakerApps(ctx context.Context) ([]MakerApp, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`select a.user_id,a.phase,a.kyc_done,a.kyc_ok,a.listing_done,a.approved,a.form_json,
 		        a.reject_reason,a.submitted_at,a.reviewed_at,coalesce(a.reviewer_id,''),a.updated_at,
-		        u.display_name
+		        a.auto_review_at,u.display_name
 		   from maker_applications a
 		   join users u on u.id = a.user_id
 		  where (a.kyc_done=1 and a.kyc_ok=0) or (a.listing_done=1 and a.approved=0)
@@ -157,6 +170,60 @@ func (s *Store) PendingMakerApps(ctx context.Context) ([]MakerApp, error) {
 		out = append(out, *a)
 	}
 	return out, rows.Err()
+}
+
+// DueMakerApps 找出到点该自动放行的申请。
+//
+// 时间戳存在库里，不是起一个睡 5 秒的 goroutine：进程重启后 goroutine 就没了，
+// 申请会永远停在「审核中」，而重启是演示机上最常发生的事。
+func (s *Store) DueMakerApps(ctx context.Context, now time.Time) ([]MakerApp, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`select `+makerCols+` from maker_applications
+		  where auto_review_at is not null and auto_review_at <= ?`, ts(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []MakerApp{}
+	for rows.Next() {
+		a, err := scanMakerApp(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
+// AutoApproveMakerApp 到点放行当前这一段。
+//
+// reviewer_id 留空:没有人看过件,记一个假的审核人比不记更糟——
+// 事后查「谁批的」时,空值至少是诚实的。
+func (s *Store) AutoApproveMakerApp(ctx context.Context, userID, stage string) error {
+	var set string
+	switch stage {
+	case "kyc":
+		set = `kyc_ok=1, phase='listing'`
+	case "listing":
+		set = `approved=1`
+	default:
+		return fmt.Errorf("bad stage %q", stage)
+	}
+	now := ts(Now())
+	// 带上 auto_review_at is not null:两个 sweep 撞上时只有一个能改到行,
+	// 另一个看到 0 行,不会重复放行。
+	_, err := s.db.ExecContext(ctx,
+		`update maker_applications
+		    set `+set+`, reject_reason='', reviewed_at=?, auto_review_at=null, updated_at=?
+		  where user_id=? and auto_review_at is not null`, now, now, userID)
+	return err
+}
+
+// ClearMakerAutoReview 撤掉自动放行的约定——真人已经先审过了。
+func (s *Store) ClearMakerAutoReview(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`update maker_applications set auto_review_at=null where user_id=?`, userID)
+	return err
 }
 
 // MakerApproved 是挂单的闸门：两段审核都过了才算。

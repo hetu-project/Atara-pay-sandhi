@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/advaita/atara-pay/internal/httpx"
 	"github.com/advaita/atara-pay/internal/store"
@@ -50,20 +52,56 @@ func (s *Service) SubmitMakerApplication(ctx context.Context, userID string,
 		KYCDone: cur.KYCDone, KYCOk: cur.KYCOk, ListingDone: cur.ListingDone, Approved: cur.Approved}
 	if req.Phase == "kyc" {
 		next.KYCDone = true
-		// 身份材料交完即视为通过。真实环境这一步是有人看件的，但那条路在演示里
-		// 是个死胡同：没人去审核台点一下，提交完的账户就永远停在「审核中」，
-		// 后面的挂单配置、成交全都走不下去。
-		//
-		// 挂单配置那一段仍然要人审——它决定这个人能对外挂什么价、多大额度，
-		// 那是真该有人看一眼的地方，而且卡在那里不影响演示买方的完整链路。
-		next.KYCOk = true
 	} else {
 		next.ListingDone = true
+	}
+	// 收下材料先进「审核中」，隔一会儿由调度器放行——两段都一样。
+	//
+	// 真实环境这一步是有人看件的，但那条路在演示里是个死胡同：没人去审核台
+	// 点一下，提交完的账户就永远停在审核中，后面的挂单配置、成交全都走不下去。
+	// 所以放行留给钟，而不是当场置位——当场变「已通过」，用户看不到有人审过件
+	// 这件事发生过，界面上那张「已收到，审核中」的卡片也就白做了。
+	//
+	// 时间写进库、由每秒一次的 sweep 来推，不是起个睡 5 秒的 goroutine：
+	// 进程重启后 goroutine 就没了，申请会永远卡在审核中。
+	if d := s.Cfg.T.MakerReview; d > 0 {
+		t := time.Now().Add(d)
+		next.AutoReviewAt = &t
 	}
 	if err := s.St.UpsertMakerApp(ctx, next); err != nil {
 		return nil, err
 	}
 	return s.St.MakerApp(ctx, userID)
+}
+
+// SweepMakerReviews 放行到点的准入申请。由调度器每秒调一次。
+//
+// 一份失败不能挡住其它份——记下来接着走，跟工单那条 sweep 一个规矩。
+func (s *Service) SweepMakerReviews(ctx context.Context, now time.Time) error {
+	due, err := s.St.DueMakerApps(ctx, now)
+	if err != nil {
+		return err
+	}
+	for _, a := range due {
+		stage := ""
+		switch {
+		case a.KYCDone && !a.KYCOk:
+			stage = "kyc"
+		case a.ListingDone && !a.Approved:
+			stage = "listing"
+		}
+		if stage == "" {
+			// 已经被人审过了（审核台先点了），到期时间留着没意义，清掉。
+			if err := s.St.ClearMakerAutoReview(ctx, a.UserID); err != nil {
+				log.Printf("maker review: clear %s: %v", a.UserID, err)
+			}
+			continue
+		}
+		if err := s.St.AutoApproveMakerApp(ctx, a.UserID, stage); err != nil {
+			log.Printf("maker review: %s %s: %v", a.UserID, stage, err)
+		}
+	}
+	return nil
 }
 
 type MakerReviewReq struct {

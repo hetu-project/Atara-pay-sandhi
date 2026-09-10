@@ -22,6 +22,9 @@ type Timings struct {
 	Dispute    time.Duration // 凭证档的异议窗口（真实 72h）
 	Fallback   time.Duration // 超时兜底转人工（真实 14d）
 	CondSettle time.Duration // 条件支付里对手方交付的模拟时长
+	// MakerReview 是提交准入材料后到自动放行之间的间隔。
+	// 0 表示不自动放行——真实环境这一步是人在看件，钟不该替他点。
+	MakerReview time.Duration
 }
 
 func demoTimings() Timings {
@@ -29,7 +32,7 @@ func demoTimings() Timings {
 		OTCMatch: 20 * time.Second, OTCBind: 2 * time.Second, OTCS1: 10 * time.Second, OTCS3: 24 * time.Second, OTCTheirPay: 10 * time.Second,
 		OTCVerify: 90 * time.Second,
 		OTCS4:     4 * time.Second, Dispute: 15 * time.Second, Fallback: 60 * time.Second,
-		CondSettle: 5 * time.Second,
+		CondSettle: 5 * time.Second, MakerReview: 5 * time.Second,
 	}
 }
 
@@ -38,7 +41,7 @@ func realTimings() Timings {
 		OTCMatch: 10 * time.Minute, OTCBind: 5 * time.Second, OTCS1: 30 * time.Minute, OTCS3: 4 * time.Hour, OTCTheirPay: 90 * time.Minute,
 		OTCVerify: 2 * time.Hour,
 		OTCS4:     2 * time.Hour, Dispute: 72 * time.Hour, Fallback: 14 * 24 * time.Hour,
-		CondSettle: 30 * time.Minute,
+		CondSettle: 30 * time.Minute, MakerReview: 0,
 	}
 }
 

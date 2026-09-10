@@ -45,6 +45,10 @@ func (s *Scheduler) sweep(ctx context.Context) {
 			log.Printf("scheduler: order %s at %s: %v", o.Ref, o.State, err)
 		}
 	}
+	// 准入申请到点自动放行（演示口径）。同一个循环，不另起 goroutine。
+	if err := s.Svc.SweepMakerReviews(ctx, time.Now()); err != nil {
+		log.Printf("scheduler: maker reviews: %v", err)
+	}
 	// 过期令牌不清会一直堆着。挂在同一个循环里，不另起 goroutine。
 	if err := s.Svc.St.PurgeConfirmations(ctx, time.Now()); err != nil {
 		log.Printf("scheduler: purge confirmations: %v", err)
