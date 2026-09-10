@@ -119,9 +119,12 @@ func (h *Handler) Router() http.Handler {
 		r.Route("/offers", func(r chi.Router) {
 			r.Get("/", h.ListOffers)
 			r.Post("/", h.CreateOffer)
+			// 真链上挂卖单是两步：先要号（连带锁币参数），钱包锁完再来建挂单。
+			r.Post("/prepare", h.PrepareOffer)
 			r.Get("/mine", h.MyOffers)
 			r.Route("/{id}", func(r chi.Router) {
 				r.Get("/", h.GetOffer)
+				r.Post("/prepare-delist", h.PrepareDelist)
 				r.Delete("/", h.Delist)
 				r.Get("/dossier", h.Dossier)
 				r.Get("/assessment", h.Assessment)

@@ -41,7 +41,7 @@ func Settle(ctx context.Context, ch chain.Chain, o *order.Order, term order.Term
 	auth chain.ReleaseAuth) (Outcome, error) {
 	switch term {
 	case order.TermCompleted:
-		payee := payeeOf(o)
+		payee := PayeeOf(o)
 		if payee == "" {
 			return Outcome{Action: "none"}, nil
 		}
@@ -52,6 +52,17 @@ func Settle(ctx context.Context, ch chain.Chain, o *order.Order, term order.Term
 		return Outcome{Action: "release", TxHash: tx}, nil
 
 	case order.TermCancelled, order.TermExpired:
+		// 没有仓位就没有可退的。撮合窗口到点作废这种情况就是如此：
+		// 那时还没有任何钱进过合约。
+		//
+		// 不先看一眼直接调 refund，真链上会 revert（合约的 NoPosition），
+		// 而 revert 会让这次状态推进整个失败——工单就永远卡在 match，
+		// 调度器每秒重试一次，日志刷满而状态一动不动。mock 链上 refund
+		// 对不存在的仓位是静默返回空哈希的，所以这个洞只有接上真链才露出来。
+		if p, perr := ch.Position(ctx, o.ID); perr != nil || p == nil ||
+			(p.Status != "escrowed" && p.Status != "pending") {
+			return Outcome{Action: "none"}, nil
+		}
 		// 退回是合约的事。挂单锁的币退回挂单本身，不退给个人——
 		// 币还 backing 着那条挂单，归还的是可成交量。合约里这一层判断在 Refund。
 		tx, err := ch.Refund(ctx, o.ID, auth)
@@ -70,8 +81,13 @@ func Settle(ctx context.Context, ch chain.Chain, o *order.Order, term order.Term
 	return Outcome{Action: "none"}, nil
 }
 
-// payeeOf 说这笔单放款该打给谁的地址。
-func payeeOf(o *order.Order) string {
+// PayeeOf 说这笔单放款该打给谁的地址。
+//
+// 导出是有原因的：真实合约放款给的是**入金时写进仓位的那个收款方**，
+// release 时再传一个地址它根本不看。所以这条规则必须在入金/绑定那一刻
+// 就用上，否则等到放款才发现方向反了——买家法币付了、币回了卖家。
+// 两处各写一份就会这样，所以只留这一份。
+func PayeeOf(o *order.Order) string {
 	switch o.Kind {
 	case order.ConditionalTransfer:
 		return o.PayeeAddr

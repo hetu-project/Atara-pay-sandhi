@@ -10,6 +10,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/shopspring/decimal"
 )
 
@@ -117,8 +118,18 @@ type Chain interface {
 	Refund(ctx context.Context, orderID string, auth ReleaseAuth) (txHash string, err error)
 
 	// LockListing / UnlockListing：挂出即锁币、下架即解锁。
+	//
+	// 这两个是**后端代签**的路径，只在 mock 链和种子数据里用。真链上锁币的
+	// 是做市方自己的钱包——合约认 msg.sender 当 maker，后端签就变成后端的币
+	// 进了托管，那不是非托管。真实路径是前端签完，后端用 ListingLockOf 核验。
 	LockListing(ctx context.Context, offerID, owner, asset string, amt decimal.Decimal) (txHash string, err error)
 	UnlockListing(ctx context.Context, offerID string) (txHash string, err error)
+
+	// ListingLockOf 读挂单此刻在合约里的锁仓。查不到返回 nil。
+	//
+	// 这是「前端自己发交易」那条路的验收口：前端说它锁了，后端不信它说的，
+	// 去链上看。不看的话，任何人都能 POST 一个挂单说自己锁了 100 万。
+	ListingLockOf(ctx context.Context, offerID string) (*ListingLock, error)
 
 	// GrantAllowance 签发额度。Atara 钱包写进账户合约策略，
 	// 外部钱包是对支出合约的 approve——两种执行方式，同一个接口。
@@ -130,6 +141,29 @@ type Chain interface {
 	// 额度是装饰，链上撤了平台还放行就是假的非托管。
 	AllowanceState(ctx context.Context, allowanceID string) (*AllowanceState, error)
 }
+
+// OfferKey 把挂单号换成合约里的 bytes32。
+//
+// 规则只有这一处：前端要拿它去调 lockListing，后端要拿它去查。两边各写
+// 一份的话，哪天改了一处，币就会锁到一个后端找不到的号下面——而且不报错。
+func OfferKey(offerID string) string {
+	return crypto.Keccak256Hash([]byte(offerID)).Hex()
+}
+
+// ListingLock 是挂单在托管合约里的锁仓状态。
+type ListingLock struct {
+	// Maker 是锁币的人。真链上它必须等于做市方自己的地址——
+	// 不等于就说明这笔币不是他锁的，挂单不能算数。
+	Maker string
+	Token string
+	// Total 锁进来的总量，Bound 已经被订单绑走的量。
+	Total decimal.Decimal
+	Bound decimal.Decimal
+	Open  bool
+}
+
+// Available 是还能被新订单吃掉的量。
+func (l *ListingLock) Available() decimal.Decimal { return l.Total.Sub(l.Bound) }
 
 // ReleaseAuth 是放行/退款的依据，由共识产出。
 //

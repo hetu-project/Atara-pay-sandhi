@@ -67,6 +67,12 @@ const escrowABI = `[
     {"name":"offerId","type":"bytes32"},{"name":"status","type":"uint8"}]}]},
 {"type":"function","name":"listingAvailable","stateMutability":"view","inputs":[
   {"name":"offerId","type":"bytes32"}],"outputs":[{"name":"","type":"uint256"}]},
+{"type":"function","name":"listingOf","stateMutability":"view","inputs":[
+  {"name":"offerId","type":"bytes32"}],"outputs":[
+  {"name":"","type":"tuple","components":[
+    {"name":"maker","type":"address"},{"name":"token","type":"address"},
+    {"name":"total","type":"uint256"},{"name":"bound","type":"uint256"},
+    {"name":"open","type":"bool"}]}]},
 {"type":"function","name":"minScore","stateMutability":"view","inputs":[],
   "outputs":[{"name":"","type":"uint16"}]},
 {"type":"function","name":"threshold","stateMutability":"view","inputs":[],
@@ -572,6 +578,44 @@ func (c *Chain) LockListing(ctx context.Context, offerID, owner, asset string,
 		return "", err
 	}
 	return h.Hex(), nil
+}
+
+// ListingLockOf 去合约里看这个挂单到底锁了多少、是谁锁的。
+//
+// 前端自己发交易那条路全靠它收口：前端说它锁了，后端不看链就信，
+// 等于任何人都能 POST 一个挂单说自己锁了 100 万。
+func (c *Chain) ListingLockOf(ctx context.Context, offerID string) (*chain.ListingLock, error) {
+	vals, err := c.callView(ctx, "listingOf", idHash(offerID))
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := vals[0].(struct {
+		Maker common.Address `json:"maker"`
+		Token common.Address `json:"token"`
+		Total *big.Int       `json:"total"`
+		Bound *big.Int       `json:"bound"`
+		Open  bool           `json:"open"`
+	})
+	if !ok {
+		return nil, fmt.Errorf("listingOf: unexpected type %T", vals[0])
+	}
+	if raw.Maker == (common.Address{}) {
+		return nil, nil // 这个挂单还没在合约里锁过任何东西
+	}
+	// 精度按代币算：合约里是最小单位，上层要的是人看的数。
+	asset := c.assetOf(raw.Token)
+	total, err := c.fromWei(ctx, asset, raw.Total)
+	if err != nil {
+		return nil, err
+	}
+	bound, err := c.fromWei(ctx, asset, raw.Bound)
+	if err != nil {
+		return nil, err
+	}
+	return &chain.ListingLock{
+		Maker: raw.Maker.Hex(), Token: asset,
+		Total: total, Bound: bound, Open: raw.Open,
+	}, nil
 }
 
 func (c *Chain) UnlockListing(ctx context.Context, offerID string) (string, error) {

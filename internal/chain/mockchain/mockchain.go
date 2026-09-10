@@ -303,6 +303,24 @@ func (c *Chain) Refund(ctx context.Context, orderID string, _ chain.ReleaseAuth)
 
 // ── 挂单锁仓 ──
 
+// ListingLockOf 读锁仓。mock 链上「链」就是这张表。
+func (c *Chain) ListingLockOf(ctx context.Context, offerID string) (*chain.ListingLock, error) {
+	var l chain.ListingLock
+	var amt, status string
+	err := c.db.QueryRowContext(ctx,
+		`select owner,asset,amount,status from chain_listing_locks where offer_id=?`, offerID).
+		Scan(&l.Maker, &l.Token, &amt, &status)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	l.Total, _ = decimal.NewFromString(amt)
+	l.Open = status == "locked"
+	return &l, nil
+}
+
 func (c *Chain) LockListing(ctx context.Context, offerID, owner, asset string, amt decimal.Decimal) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

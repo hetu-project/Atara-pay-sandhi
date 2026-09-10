@@ -97,6 +97,32 @@ func (h *Handler) CreateOffer(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, toOffer(o))
 }
 
+// PrepareOffer 发一个挂单号与锁币要用的参数。真链上挂卖单必须先走这一步：
+// 币由做市方自己的钱包锁进合约，锁之前得先知道锁到哪个号下面。
+func (h *Handler) PrepareOffer(w http.ResponseWriter, r *http.Request) {
+	var req app.CreateOfferReq
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	p, err := h.Svc.PrepareOffer(r.Context(), h.actorID(r), req)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, p)
+}
+
+// PrepareDelist 发解锁那一笔要用的参数。
+func (h *Handler) PrepareDelist(w http.ResponseWriter, r *http.Request) {
+	p, err := h.Svc.PrepareDelist(r.Context(), h.actorID(r), chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, p)
+}
+
 func (h *Handler) Delist(w http.ResponseWriter, r *http.Request) {
 	if err := h.Svc.Delist(r.Context(), h.actorID(r), chi.URLParam(r, "id")); err != nil {
 		httpx.Error(w, err)

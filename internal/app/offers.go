@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/advaita/atara-pay/internal/agent"
 	"github.com/advaita/atara-pay/internal/auth"
+	"github.com/advaita/atara-pay/internal/chain"
 	"github.com/advaita/atara-pay/internal/domain/model"
 	"github.com/advaita/atara-pay/internal/domain/order"
 	"github.com/advaita/atara-pay/internal/httpx"
@@ -39,6 +41,70 @@ type CreateOfferReq struct {
 	UnitPrice string   `json:"unit_price"`
 	Qty       string   `json:"qty"`
 	MinLot    string   `json:"min_lot"`
+
+	// OfferID 是 /offers/prepare 预先分配的号。真链上卖单必须带它：
+	// 币是做市方自己的钱包锁进合约的，锁的时候就得知道锁到哪个号下面，
+	// 所以号要先发出去，锁完再拿着它来建挂单。
+	OfferID string `json:"offer_id"`
+	// LockTx 是那笔锁币交易。只用来存档——**判断依据是链上状态，不是这个哈希**。
+	// 信哈希等于信客户端：随便贴一个别人的交易哈希也能过。
+	LockTx string `json:"lock_tx"`
+}
+
+// PreparedOffer 是「你去锁币吧」这句话要说清的全部东西。
+type PreparedOffer struct {
+	// OfferID 建挂单时原样传回来。
+	OfferID string `json:"offer_id"`
+	// OfferKey 是合约里那个 bytes32。哈希规则留在后端一处——
+	// 两边各算各的，一旦不一致，币会锁到一个后端找不到的号下面。
+	OfferKey string `json:"offer_key"`
+	Escrow   string `json:"escrow"`
+	Token    string `json:"token"`
+	Decimals int    `json:"decimals"`
+	// AmountWei 是要锁的量，已经按代币精度换算好。前端不该自己乘 10^n：
+	// BSC 上稳定币 18 位、以太坊上 6 位，算错就是 10^12 倍的差。
+	AmountWei string `json:"amount_wei"`
+	ChainID   int64  `json:"chain_id"`
+	Network   string `json:"network"`
+}
+
+// PrepareOffer 发一个挂单号，并把锁币要用的参数一并算好。
+//
+// 为什么要有这一步：合约里 lockListing(offerId,…) 的 offerId 是主键，
+// 前端发交易时就得带上它，而号是后端发的。所以顺序只能是「先要号、
+// 再锁币、最后建挂单」——建挂单时后端去链上核对这个号下面到底锁了什么。
+func (s *Service) PrepareOffer(ctx context.Context, makerID string, req CreateOfferReq) (*PreparedOffer, error) {
+	if !money.IsCrypto(req.Asset) || !money.Tradable(req.Asset) {
+		return nil, httpx.Fail(http.StatusUnprocessableEntity, "UNKNOWN_ASSET", "asset",
+			fmt.Sprintf("%s is not tradable — this version settles USDT and USDC", req.Asset))
+	}
+	qty, err := decimal.NewFromString(req.Qty)
+	if err != nil || !qty.IsPositive() {
+		return nil, httpx.Fail(http.StatusUnprocessableEntity, "INVALID_AMOUNT", "qty",
+			"quantity must be greater than zero")
+	}
+	if !s.St.MakerApproved(ctx, makerID) {
+		return nil, httpx.Fail(http.StatusForbidden, "MAKER_NOT_APPROVED", "",
+			"your maker application has not cleared yet")
+	}
+	info := s.Ch.Info(ctx)
+	tok := info.Tokens[strings.ToUpper(req.Asset)]
+	if info.Impl != "evm" || tok.Address == "" {
+		return nil, httpx.Fail(http.StatusConflict, "CHAIN_NOT_READY", "",
+			"this deployment is not connected to a chain — listings do not lock on chain here")
+	}
+	id := store.NewID()
+	return &PreparedOffer{
+		OfferID: id, OfferKey: chain.OfferKey(id),
+		Escrow: info.Escrow, Token: tok.Address, Decimals: tok.Decimals,
+		AmountWei: toWei(qty, tok.Decimals), ChainID: info.ChainID, Network: info.Network,
+	}, nil
+}
+
+// toWei 把人看的数换成合约里的最小单位。用 decimal 而不是 float：
+// 0.1 在二进制里没有精确表示，用 float 换算金额迟早会差几个最小单位。
+func toWei(v decimal.Decimal, decimals int) string {
+	return v.Shift(int32(decimals)).Truncate(0).String()
 }
 
 // CreateOffer 挂单。挂出即锁币——买家看到的可成交量必须真的在托管里。
@@ -87,12 +153,22 @@ func (s *Service) CreateOffer(ctx context.Context, makerID, confirmToken string,
 	// 卖单锁的是要交割的币——挂出即锁币，锁进合约，不是锁在平台。
 	// 买单不锁币：法币腿走银行，平台不代收法币，所以只是一句承诺。
 	lockTx := ""
+	// selfLocked：币已经由做市方自己的钱包锁进合约了，后端只负责核验。
+	// 真链上这是唯一正确的路径——合约认 msg.sender 当 maker，后端代签
+	// 就变成后端的币进了托管，那不是非托管。
+	selfLocked := false
 	if req.Side == "sell" {
 		if err := s.Confirm.Consume(ctx, confirmToken, makerID,
 			Digest("offer", req.Asset, qty.String()), auth.GradeSignature); err != nil {
 			return nil, err
 		}
-		if err := s.requireOnChain(ctx, maker.Address, req.Asset, qty); err != nil {
+		if req.OfferID != "" {
+			if err := s.verifyListingLock(ctx, req.OfferID, maker.Address, req.Asset, qty); err != nil {
+				return nil, err
+			}
+			selfLocked = true
+			lockTx = req.LockTx
+		} else if err := s.requireOnChain(ctx, maker.Address, req.Asset, qty); err != nil {
 			return nil, err
 		}
 	} else if err := s.Confirm.Consume(ctx, confirmToken, makerID,
@@ -100,19 +176,30 @@ func (s *Service) CreateOffer(ctx context.Context, makerID, confirmToken string,
 		return nil, err
 	}
 
+	id := req.OfferID
+	if id == "" {
+		id = store.NewID()
+	} else if existing, err := s.St.Offer(ctx, id); err == nil && existing != nil {
+		// 同一个号建两次挂单：第二次会把第一次那笔锁仓算进来，凭空多出可成交量。
+		return nil, httpx.Fail(http.StatusConflict, "OFFER_EXISTS", "offer_id",
+			"that listing has already been created")
+	}
+
 	o := &model.Offer{
-		ID: store.NewID(), MakerID: makerID, Side: req.Side, Asset: req.Asset,
+		ID: id, MakerID: makerID, Side: req.Side, Asset: req.Asset,
 		Network: req.Network, Networks: req.Networks, Fiat: req.Fiat,
 		UnitPrice: price, Qty: qty, RemainingQty: qty, MinLot: minLot,
 		Status: "active", CreatedAt: time.Now().UTC(),
 	}
-	if req.Side == "sell" {
+	if req.Side == "sell" && !selfLocked {
+		// mock 链与本地演示走这条：后端代锁。真链上走不到这儿——
+		// 上面 selfLocked 已经把币核验过了。
 		// 先上链再入库：链动作没有回滚，必须先成功。
 		if lockTx, err = s.Ch.LockListing(ctx, o.ID, maker.Address, o.Asset, qty); err != nil {
 			return nil, chainErr(err)
 		}
-		o.LockTx = lockTx
 	}
+	o.LockTx = lockTx
 	err = s.St.Tx(ctx, func(tx *sql.Tx) error {
 		if err := s.St.InsertOffer(tx, o); err != nil {
 			return err
@@ -131,6 +218,64 @@ func (s *Service) CreateOffer(ctx context.Context, makerID, confirmToken string,
 	return s.St.Offer(ctx, o.ID)
 }
 
+// signerAddress 是后端那把私钥对应的地址。用来分辨「这笔锁仓是后端代锁的
+// 还是用户自己锁的」——两者的解锁路径不一样。
+func (s *Service) signerAddress() string {
+	type signerer interface{ SignerAddress() string }
+	if sa, ok := s.Ch.(signerer); ok {
+		return sa.SignerAddress()
+	}
+	return ""
+}
+
+// PrepareDelist 给前端发解锁那一笔要用的参数。
+func (s *Service) PrepareDelist(ctx context.Context, makerID, offerID string) (*PreparedOffer, error) {
+	o, err := s.St.Offer(ctx, offerID)
+	if err != nil {
+		return nil, httpx.NotFound("offer")
+	}
+	if o.MakerID != makerID {
+		return nil, httpx.Fail(http.StatusForbidden, "NOT_YOURS", "", "that listing belongs to another account")
+	}
+	info := s.Ch.Info(ctx)
+	return &PreparedOffer{
+		OfferID: o.ID, OfferKey: chain.OfferKey(o.ID),
+		Escrow: info.Escrow, ChainID: info.ChainID, Network: info.Network,
+	}, nil
+}
+
+// verifyListingLock 去链上核对这笔挂单到底锁了什么。
+//
+// 前端说它锁了，后端不看链就信，等于任何人都能 POST 一个挂单说自己锁了
+// 100 万。四件事都要对上：锁的人是他、币种没错、挂单还开着、量够。
+func (s *Service) verifyListingLock(ctx context.Context, offerID, maker, asset string,
+	qty decimal.Decimal) error {
+	l, err := s.Ch.ListingLockOf(ctx, offerID)
+	if err != nil {
+		return chainErr(err)
+	}
+	bad := func(msg string) error {
+		return httpx.Fail(http.StatusUnprocessableEntity, "LOCK_NOT_FOUND", "offer_id", msg)
+	}
+	if l == nil {
+		return bad("no coins are locked under that listing id yet — send the lock transaction first")
+	}
+	if !strings.EqualFold(l.Maker, maker) {
+		return bad("those coins were locked by a different wallet")
+	}
+	if !strings.EqualFold(l.Token, asset) {
+		return bad(fmt.Sprintf("that listing locked %s, not %s", l.Token, asset))
+	}
+	if !l.Open {
+		return bad("that listing lock has already been released")
+	}
+	if l.Available().LessThan(qty) {
+		return bad(fmt.Sprintf("only %s %s is locked — you are listing %s",
+			l.Available(), asset, qty))
+	}
+	return nil
+}
+
 // Delist 下架。下架即解锁——挂着的币解回可用余额。
 func (s *Service) Delist(ctx context.Context, makerID, offerID string) error {
 	o, err := s.St.Offer(ctx, offerID)
@@ -146,8 +291,23 @@ func (s *Service) Delist(ctx context.Context, makerID, offerID string) error {
 	unlockTx := ""
 	if o.Side == "sell" && o.RemainingQty.IsPositive() {
 		// 下架即解锁：合约把剩下的币还回钱包。
-		if unlockTx, err = s.Ch.UnlockListing(ctx, o.ID); err != nil {
-			return chainErr(err)
+		//
+		// 谁来解锁取决于当初是谁锁的。真链上是做市方自己的钱包锁的，
+		// 合约只认原 maker —— 后端去调必然 revert。所以那条路上后端只核验
+		// 「链上已经解开了」，解锁那一下由前端发。
+		l, lerr := s.Ch.ListingLockOf(ctx, o.ID)
+		selfLocked := lerr == nil && l != nil && !strings.EqualFold(l.Maker, s.signerAddress())
+		switch {
+		case selfLocked && l.Open:
+			return httpx.Fail(http.StatusConflict, "UNLOCK_REQUIRED", "",
+				"those coins were locked by your wallet — send the unlock transaction first").
+				With(&httpx.Remedy{Action: "unlock_listing", Value: chain.OfferKey(o.ID)})
+		case selfLocked:
+			// 已经解开了，只剩记账
+		default:
+			if unlockTx, err = s.Ch.UnlockListing(ctx, o.ID); err != nil {
+				return chainErr(err)
+			}
 		}
 	}
 	return s.St.Tx(ctx, func(tx *sql.Tx) error {

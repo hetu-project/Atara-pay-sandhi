@@ -402,6 +402,12 @@ func (s *Service) mine(ctx context.Context, actorID, orderID string) (*order.Ord
 // ── 系统推进 ──
 
 func (s *Service) Tick(ctx context.Context, o *order.Order) error {
+	// 调度器是从库里直接捞出来的工单，两个地址字段是空的。放款和绑定托管
+	// 都要用它们——真实合约按仓位里那个地址放款，地址空着就只能拒绝，
+	// 工单会卡在原地每秒重试。补上再往下走。
+	if err := s.hydrateAddrs(ctx, o); err != nil {
+		return err
+	}
 	switch o.Kind {
 	case order.ConditionalTransfer:
 		return s.tickConditional(ctx, o)
@@ -562,14 +568,20 @@ func (s *Service) tickOTC(ctx context.Context, o *order.Order) error {
 
 // bindListingLock 把挂单时锁好的仓位绑到这笔订单。买方向的 s1 就是这一步。
 func (s *Service) bindListingLock(ctx context.Context, o *order.Order) error {
-	maker, err := s.St.User(ctx, o.CounterpartyID)
-	if err != nil {
-		return err
+	// 绑定时写进仓位的收款方**必须是最终拿到币的人**。合约放款只看仓位里
+	// 这个地址，release 时再传一个它不看——写错方向的后果是买家法币付了、
+	// 币回了卖家，而且一路不报错。这里原来写的是 maker，正是这个方向。
+	//
+	// mock 链上看不出来：那边 Release 认调用方传的地址，所以两处不一致也能
+	// 走通。接上真链才露出来。
+	payee := settlement.PayeeOf(o)
+	if payee == "" {
+		return fmt.Errorf("order %s: no payee address to bind escrow to", o.Ref)
 	}
-	_, err = s.advance(ctx, o.ID, order.EvBind, order.ActorSystem, order.S3,
+	_, err := s.advance(ctx, o.ID, order.EvBind, order.ActorSystem, order.S3,
 		"Escrow verified · their coins were locked at listing, now bound to this order", nil,
 		func(oo *order.Order) (settlement.Outcome, error) {
-			p, err := s.Ch.BindListingLock(ctx, oo.ID, oo.OTC.OfferID, maker.Address, oo.Asset, oo.Amount)
+			p, err := s.Ch.BindListingLock(ctx, oo.ID, oo.OTC.OfferID, payee, oo.Asset, oo.Amount)
 			if err != nil {
 				return settlement.Outcome{}, err
 			}
