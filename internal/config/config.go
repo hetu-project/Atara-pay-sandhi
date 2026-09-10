@@ -57,6 +57,11 @@ type Config struct {
 	CORSOrigins string
 	T           Timings
 
+	// Seed 说要不要灌那套演示数据（10 家做市方、10 条挂单、联系人、
+	// 余额、额度）。默认不灌：拿真实流程做验收时，写死评分和成交记录的
+	// 假商家混在自己挂的单里根本分不清哪个是真的。
+	Seed bool
+
 	// SchedTick 是调度器多久扫一次到期的工单。
 	//
 	// 接了真链时这就是「多久去链上确认一次状态」。每秒扫一遍在真链上是浪费：
@@ -96,6 +101,7 @@ func Load() Config {
 		UploadDir:   env("ATARA_UPLOAD_DIR", "./var/uploads"),
 		CORSOrigins: env("ATARA_CORS_ORIGINS", "*"),
 		ChainImpl:   env("ATARA_CHAIN_IMPL", "mock"),
+		Seed:        envBool("ATARA_SEED", false),
 		SchedTick:   envDur("ATARA_SCHED_TICK", 0),
 		Chain: ChainConfig{
 			RPCURL:       env("ATARA_RPC_URL", "http://127.0.0.1:8545"),

@@ -33,7 +33,15 @@ type Funder interface {
 //
 // 注意余额走 Funder 灌到链上，不写进本库——平台没有余额表，
 // 种子数据也不能例外，否则第一行代码就把非托管的边界破了。
-func (s *Store) Seed(ctx context.Context, ch Funder) error {
+// Seed 灌数据。
+//
+// full=false 时只建两个账户：匿名访客落到的 demo 用户，和审核用的 reviewer。
+// 没有余额、没有额度、没有联系人、没有做市方、没有一条挂单——货架是空的，
+// 所有东西都得从界面上真做出来。要拿真实流程做验收时就该是这样：种子那 10
+// 家做市方带着写死的评分和成交记录，混在自己挂的单里根本分不清哪个是真的。
+//
+// full=true 恢复整套演示数据（ATARA_SEED=true）。
+func (s *Store) Seed(ctx context.Context, ch Funder, full bool) error {
 	var n int
 	if err := s.db.QueryRowContext(ctx, `select count(*) from users`).Scan(&n); err != nil {
 		return err
@@ -77,8 +85,10 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 		if _, err := tx.Exec(`update users set email=? where id=?`, "demo@atara.example", demoID); err != nil {
 			return err
 		}
-		for _, w := range [][2]string{{"USDT", "34500"}, {"USDC", "1200"}, {"BTC", "0.42"}, {"ETH", "3.6"}} {
-			credits = append(credits, seeded{demoID, ch.DeriveAddress(demoSeed), w[0], w[1]})
+		if full {
+			for _, w := range [][2]string{{"USDT", "34500"}, {"USDC", "1200"}, {"BTC", "0.42"}, {"ETH", "3.6"}} {
+				credits = append(credits, seeded{demoID, ch.DeriveAddress(demoSeed), w[0], w[1]})
+			}
 		}
 
 		// ── 审核账号：role=reviewer，供 Task 9 的审核端点演示用。
@@ -89,6 +99,11 @@ func (s *Store) Seed(ctx context.Context, ch Funder) error {
 			reviewerID, ch.DeriveAddress(reviewerSeed), "Reviewer", "reviewer@atara.example",
 			"person", "atara", "passkey", nextHue(), "reviewer", now); err != nil {
 			return err
+		}
+
+		if !full {
+			// 到此为止：两个账户，别的什么都没有。
+			return nil
 		}
 
 		// ── 额度：本人一份，三个 agent 各一份 ──

@@ -63,8 +63,12 @@ func main() {
 			"演示做市方的挂单会显示可成交量 0。")
 		funder = readOnlyFunder{funder}
 	}
-	if err := st.Seed(ctx, funder); err != nil {
+	if err := st.Seed(ctx, funder, cfg.Seed); err != nil {
 		log.Fatalf("seed: %v", err)
+	}
+	if !cfg.Seed {
+		log.Printf("空库启动：没有演示做市方、挂单、联系人或余额。" +
+			"要那套演示数据就设 ATARA_SEED=true。")
 	}
 	svc := app.New(st, ag, ch, cfg, auth.NewConfirmations(st))
 	go scheduler.New(svc).Run(ctx)
