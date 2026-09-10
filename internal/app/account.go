@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -101,7 +102,41 @@ func (s *Service) Connect(ctx context.Context, method, address, email, name stri
 	if err := s.St.Tx(ctx, func(tx *sql.Tx) error { return s.St.InsertUser(tx, u) }); err != nil {
 		return nil, false, err
 	}
+	s.fundDemoAccount(ctx, address)
 	return u, true, nil
+}
+
+// demoBalances 是新开的演示账户拿到的币，与种子里 Demo 用户那份一致。
+var demoBalances = [][2]string{{"USDT", "34500"}, {"USDC", "1200"}}
+
+// crediter 是「能凭空记一笔余额」的链。只有 mockchain 实现它——
+// 真链没有这个方法，所以下面那段在真链上根本编译不进任何行为，
+// 不用担心哪天配错环境把演示余额发到主网上。
+type crediter interface {
+	Credit(ctx context.Context, address, asset string, amt decimal.Decimal) error
+}
+
+// fundDemoAccount 给新账户发演示余额。
+//
+// 没有这一步的话，新登录的人点「Post your first listing」会看到
+// 「0 USDT available」，那条路当场断掉：卖单要锁币，锁的是他没有的东西。
+//
+// 发不出去不挡登录：账户已经建好了，为了发币把登录整个失败掉更糟——
+// 余额是演示用的方便，身份不是。
+func (s *Service) fundDemoAccount(ctx context.Context, address string) {
+	c, ok := s.Ch.(crediter)
+	if !ok {
+		return
+	}
+	for _, b := range demoBalances {
+		amt, err := decimal.NewFromString(b[1])
+		if err != nil {
+			continue
+		}
+		if err := c.Credit(ctx, address, b[0], amt); err != nil {
+			log.Printf("demo funding %s %s: %v", address, b[0], err)
+		}
+	}
 }
 
 // newAddress 造一个地址。
