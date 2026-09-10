@@ -300,6 +300,13 @@ func (c *Chain) ExplorerURL(_, address string) string {
 	return strings.TrimSuffix(c.cfg.ExplorerBase, "/") + "/address/" + address
 }
 
+func (c *Chain) TxURL(txHash string) string {
+	if c.cfg.ExplorerBase == "" || txHash == "" {
+		return ""
+	}
+	return strings.TrimSuffix(c.cfg.ExplorerBase, "/") + "/tx/" + txHash
+}
+
 // DeriveAddress 从身份种子派生一个确定性的 EVM 地址。
 //
 // 取 keccak 的后 20 字节。这些地址**没有对应的私钥**——Demo 里签名只有

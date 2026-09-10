@@ -169,11 +169,15 @@ type evidenceJSON struct {
 }
 
 type evidenceTx struct {
-	Kind   string    `json:"kind"`
-	Amount string    `json:"amount,omitempty"`
-	TxHash string    `json:"tx_hash,omitempty"`
-	Memo   string    `json:"memo,omitempty"`
-	At     time.Time `json:"at"`
+	Kind   string `json:"kind"`
+	Amount string `json:"amount,omitempty"`
+	TxHash string `json:"tx_hash,omitempty"`
+	// Explorer 是这笔交易在区块浏览器上的地址。哈希不给链接的话，
+	// 用户要自己认出这是哪条链、再去找对应的浏览器——而这条链是哪条，
+	// 只有我们知道。
+	Explorer string    `json:"explorer,omitempty"`
+	Memo     string    `json:"memo,omitempty"`
+	At       time.Time `json:"at"`
 }
 
 type condJSON struct {
@@ -263,7 +267,11 @@ func (h *Handler) toOrder(ctx context.Context, viewerID string, o *order.Order, 
 			for _, e := range evs {
 				ev.Chain = append(ev.Chain, evidenceTx{
 					Kind: e.Kind, Amount: e.Amount.String(), TxHash: e.TxHash,
-					Memo: e.Memo, At: e.At,
+					// 链接由链自己给：mock 下是空串，前端就只印哈希不给链接。
+					// 按 EscrowNetwork 去 money.ChainOf 查是错的——mock 把网络
+					// 名报成 "Ethereum"，于是假哈希配上了 etherscan 的真链接。
+					Explorer: h.Svc.Ch.TxURL(e.TxHash),
+					Memo:     e.Memo, At: e.At,
 				})
 			}
 		}

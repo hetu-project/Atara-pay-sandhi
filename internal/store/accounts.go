@@ -41,6 +41,15 @@ func (s *Store) UserByHandle(ctx context.Context, h string) (*model.User, error)
 		`select `+userCols+` from users where lower(display_name)=lower(?) limit 1`, h).Scan)
 }
 
+// prefixed 给一串列名统一加表前缀。
+func prefixed(alias, cols string) string {
+	parts := strings.Split(cols, ",")
+	for i, c := range parts {
+		parts[i] = alias + "." + strings.TrimSpace(c)
+	}
+	return strings.Join(parts, ",")
+}
+
 func scanUser(scan func(...any) error) (*model.User, error) {
 	var u model.User
 	var created string
@@ -105,7 +114,15 @@ func (s *Store) ResolveContact(ctx context.Context, q string) (*model.User, erro
 //
 // 排除自己和已经加过的人——把「已经在列表里」的人再列一遍，点下去只会
 // 得到一句「已存在」。
-func (s *Store) SearchAccounts(ctx context.Context, viewerID, q string, limit int) ([]*model.User, error) {
+// SearchAccounts 找人。名字模糊、地址精确。
+//
+// 已经是联系人的**照样返回**，带上关系状态。早先的写法是把他们从结果里
+// 排掉，于是搜一个已加的人得到「查无此人」——而这个账户明明存在，用户会
+// 以为自己记错了名字，或者以为系统坏了。真正该说的是「已经加过了」。
+//
+// 而且那个排除只写在按名字的分支上：同一个人，按名字搜不到、按地址搜得到。
+// 两条路对同一个问题给两个答案，比给错答案更难查。
+func (s *Store) SearchAccounts(ctx context.Context, viewerID, q string, limit int) ([]*model.Found, error) {
 	q = strings.TrimSpace(q)
 	if q == "" {
 		return nil, nil
@@ -113,31 +130,38 @@ func (s *Store) SearchAccounts(ctx context.Context, viewerID, q string, limit in
 	if limit <= 0 || limit > 20 {
 		limit = 8
 	}
-	// 看着像地址就只按地址精确查。
+	// 看着像地址就只按地址精确查。地址不做模糊：前缀匹配等于开放一个可以
+	// 按前缀遍历账户的接口。
 	if strings.HasPrefix(q, "0x") || strings.HasPrefix(q, "T") || strings.HasPrefix(q, "bc1") {
 		u, err := s.UserByAddress(ctx, q)
 		if err != nil || u.ID == viewerID {
 			return nil, nil
 		}
-		return []*model.User{u}, nil
+		rel := s.ContactStatus(ctx, viewerID, u.ID)
+		return []*model.Found{{User: u, Relation: rel}}, nil
 	}
+	// 列名要带表前缀：users 和 contacts 都有 created_at，不加前缀 SQLite
+	// 会报 ambiguous column，而那个错要到运行时才看得见。
 	rows, err := s.db.QueryContext(ctx,
-		`select `+userCols+` from users
-		  where id <> ? and lower(display_name) like lower(?)
-		    and id not in (select contact_id from contacts where owner_id = ?)
-		  order by length(display_name), display_name limit ?`,
-		viewerID, "%"+q+"%", viewerID, limit)
+		`select `+prefixed("u", userCols)+`, coalesce(c.status,'') from users u
+		   left join contacts c on c.owner_id = ? and c.contact_id = u.id
+		  where u.id <> ? and lower(u.display_name) like lower(?)
+		  order by length(u.display_name), u.display_name limit ?`,
+		viewerID, viewerID, "%"+q+"%", limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*model.User
+	var out []*model.Found
 	for rows.Next() {
-		u, err := scanUser(rows.Scan)
+		var rel string
+		u, err := scanUser(func(dst ...any) error {
+			return rows.Scan(append(dst, &rel)...)
+		})
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, u)
+		out = append(out, &model.Found{User: u, Relation: rel})
 	}
 	return out, rows.Err()
 }

@@ -83,6 +83,9 @@ func (c *Chain) ExplorerURL(asset, address string) string {
 	return ""
 }
 
+// TxURL 同理：mock 的哈希是本地编的，链上没有这笔交易。
+func (c *Chain) TxURL(txHash string) string { return "" }
+
 // ── 余额 ──
 
 func (c *Chain) Balance(ctx context.Context, address, asset string) (decimal.Decimal, error) {

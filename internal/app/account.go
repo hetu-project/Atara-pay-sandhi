@@ -190,7 +190,7 @@ func shortAddr(a string) string {
 // ── 额度 ──
 
 // SearchAccounts 找人。名字模糊、地址精确——见 store.SearchAccounts。
-func (s *Service) SearchAccounts(ctx context.Context, viewerID, q string) ([]*model.User, error) {
+func (s *Service) SearchAccounts(ctx context.Context, viewerID, q string) ([]*model.Found, error) {
 	return s.St.SearchAccounts(ctx, viewerID, q, 8)
 }
 

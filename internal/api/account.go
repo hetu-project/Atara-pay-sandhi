@@ -84,14 +84,18 @@ func (h *Handler) SearchAccounts(w http.ResponseWriter, r *http.Request) {
 		Address string `json:"address"`
 		Name    string `json:"name"`
 		Kind    string `json:"kind"`
-		// 已经互相加过的人不在结果里（SQL 已经排掉），这里带上成绩单，
-		// 让人在点「添加」之前就看得见对方是谁。
+		// 成绩单跟结果一起给：让人在点「添加」之前就看得见对方是谁。
 		Deals      int `json:"deals"`
 		TrustScore int `json:"trust_score"`
+		// Relation 是我跟这个人现在的关系：""（还没有）/ pending / accepted。
+		// 已经加过的人照样在结果里——搜一个已加的人却得到「查无此人」，
+		// 用户会以为是自己记错了名字。
+		Relation string `json:"relation,omitempty"`
 	}
 	out := make([]row, 0, len(us))
 	for _, u := range us {
-		x := row{ID: u.ID, Address: u.Address, Name: u.DisplayName, Kind: u.Kind}
+		x := row{ID: u.ID, Address: u.Address, Name: u.DisplayName, Kind: u.Kind,
+			Relation: u.Relation}
 		if m, err := h.St.Merchant(r.Context(), u.ID); err == nil {
 			x.Deals, x.TrustScore = m.Deals, m.TrustScore
 		}

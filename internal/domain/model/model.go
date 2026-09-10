@@ -122,3 +122,13 @@ type Message struct {
 	Payload   map[string]string `json:"payload,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
 }
+
+// Found 是一次账户搜索的结果行：一个账户，外加「我跟他是什么关系」。
+//
+// 关系必须跟账户一起返回。分两次查的话，界面上会短暂地把一个已经加过的人
+// 显示成可添加——点下去才报错，而错的是界面不是用户。
+type Found struct {
+	*User
+	// Relation 是 ""（还没关系）/ pending（我请求了，等他点头）/ accepted。
+	Relation string `json:"relation,omitempty"`
+}

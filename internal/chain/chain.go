@@ -88,6 +88,11 @@ type Chain interface {
 	SpendingAddress() string
 	// ExplorerURL 给前端拼浏览器链接。
 	ExplorerURL(asset, address string) string
+	// TxURL 是一笔交易在区块浏览器上的地址。
+	//
+	// 和 ExplorerURL 一样由链自己回答，而不是上层按网络名去拼：mock 链的
+	// 哈希不是链上的东西，任何链接过去都是 404——只有链自己知道这一点。
+	TxURL(txHash string) string
 	// DeriveAddress 按**这条链的地址格式**，为一个身份种子派生确定性地址。
 	//
 	// 地址格式是链的属性，不是平台的：TRON 是 base58 的 T 开头，EVM 是 0x 十六进制。
