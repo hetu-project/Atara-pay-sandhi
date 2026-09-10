@@ -99,6 +99,10 @@ func (s *Service) SweepMakerReviews(ctx context.Context, now time.Time) error {
 		}
 		if err := s.St.AutoApproveMakerApp(ctx, a.UserID, stage); err != nil {
 			log.Printf("maker review: %s %s: %v", a.UserID, stage, err)
+			continue
+		}
+		if err := s.St.EnsureMerchant(ctx, a.UserID, docsOf(a.FormJSON)); err != nil {
+			log.Printf("maker review: %s 画像: %v", a.UserID, err)
 		}
 	}
 	return nil
@@ -126,6 +130,41 @@ func mergeForms(prev, phase string, form json.RawMessage) string {
 		return string(form)
 	}
 	return string(b)
+}
+
+// docsOf 说这个申请人到底提供了哪几样资质件。
+//
+// 六个标记的含义写在前端的 DOCS 里，这里必须跟它对上，而且**只认真收过的**：
+// 挂单卡上那一排是给买家看的凭据，凭空点亮就是在替他做担保。所以
+// PoF（资金证明）、Stmts（流水）、Chain（链上溯源）一律不点——这一版
+// 根本没收过、也没跑过链上筛查。
+func docsOf(formJSON string) map[string]bool {
+	var forms struct {
+		KYC map[string]any `json:"kyc"`
+	}
+	_ = json.Unmarshal([]byte(formJSON), &forms)
+	k := forms.KYC
+	// multi 类字段存的是数组，空数组不算填过——「点开看了一眼」跟
+	// 「真的选了来源」是两回事。
+	has := func(name string) bool {
+		v, ok := k[name]
+		if !ok || v == nil || v == "" {
+			return false
+		}
+		if a, isArr := v.([]any); isArr {
+			return len(a) > 0
+		}
+		return true
+	}
+	docs := map[string]bool{
+		// 身份审过了，这一条才是这次流程真正证成的东西
+		"kyc": true,
+		// 财富来源：个人表是 sow，企业表是 csow / mainrev
+		"sow": has("sow") || has("csow") || has("mainrev"),
+		// 授权文件只对企业主体有意义
+		"poa": k["kind"] == "Corporate",
+	}
+	return docs
 }
 
 type MakerReviewReq struct {

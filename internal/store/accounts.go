@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -208,3 +211,32 @@ func (s *Store) SpendAllowance(tx *sql.Tx, id string, usd decimal.Decimal) error
 }
 
 var _ = time.Now
+
+// EnsureMerchant 给刚审过准入的做市方建一份画像。
+//
+// 没有这一行，挂单列表那句 left join 出来全是 NULL：评分 0、六个资质件
+// 全灰、连商户编号都没有。以前这张表只有种子往里写，所以这条路一直没人走。
+//
+// 已经有画像就只更新资质件，不动成绩：deals / disputes 是交易攒出来的，
+// 重新提一次材料不该把它们清零。
+func (s *Store) EnsureMerchant(ctx context.Context, userID string, docs map[string]bool) error {
+	b, err := json.Marshal(docs)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`insert into merchant_profiles
+		   (user_id,peer_code,trust_score,deals,disputes,fill_rate,median_release_secs,docs)
+		 values(?,?,0,0,0,'0',0,?)
+		 on conflict(user_id) do update set docs=excluded.docs`,
+		userID, peerCode(userID), string(b))
+	return err
+}
+
+// peerCode 是对外的商户编号。种子里是 D118500 这种六位数字，真实用户
+// 按账户 id 推一个同样形状的——不能用自增：编号会泄露「平台一共几个商户」。
+func peerCode(userID string) string {
+	h := sha256.Sum256([]byte("atara-peer|" + userID))
+	n := binary.BigEndian.Uint32(h[:4])%900000 + 100000
+	return fmt.Sprintf("D%06d", n)
+}
