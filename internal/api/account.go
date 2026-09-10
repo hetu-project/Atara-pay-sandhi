@@ -221,3 +221,39 @@ func (h *Handler) PasskeyAssert(w http.ResponseWriter, r *http.Request) {
 }
 
 var _ = time.Now
+
+// ── 法币收款账户 ──
+
+func (h *Handler) BankAccounts(w http.ResponseWriter, r *http.Request) {
+	u := auth.Actor(r.Context())
+	list, err := h.Svc.BankAccounts(r.Context(), u.ID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, map[string]any{"accounts": list})
+}
+
+func (h *Handler) SaveBankAccount(w http.ResponseWriter, r *http.Request) {
+	var req app.BankReq
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	u := auth.Actor(r.Context())
+	a, err := h.Svc.SaveBankAccount(r.Context(), u.ID, chi.URLParam(r, "id"), req)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, a)
+}
+
+func (h *Handler) DeleteBankAccount(w http.ResponseWriter, r *http.Request) {
+	u := auth.Actor(r.Context())
+	if err := h.Svc.DeleteBankAccount(r.Context(), u.ID, chi.URLParam(r, "id")); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, map[string]string{"status": "deleted"})
+}

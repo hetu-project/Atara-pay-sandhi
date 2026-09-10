@@ -211,6 +211,27 @@ create table if not exists payees (
 );
 
 -- 提现：记的是意图与合规材料，不代持资金。tx_hash 由用户签完回填。
+-- 法币收款账户：只存自己的。
+--
+-- OTC 的法币腿点对点走银行——账号是给对手方的，钱不经过平台。对手方的
+-- 银行信息属于那笔交易，不属于我的账户簿，所以不混在这张表里。
+--
+-- account_no 存的是**掩码后的号**（首四末四），不是全量。全量只在提交那一刻
+-- 用来校验，校完就丢。这样即使库被拖走，里面也没有可以直接拿去用的账号；
+-- 代价是改号必须重打一遍——那正是它该有的代价。
+create table if not exists bank_accounts (
+  id          text primary key,
+  owner_id    text not null references users(id),
+  holder      text not null,
+  bank        text not null,
+  account_no  text not null,
+  currency    text not null,
+  region      text not null,
+  created_at  text not null,
+  updated_at  text not null
+);
+create index if not exists idx_bank_owner on bank_accounts(owner_id);
+
 create table if not exists withdrawals (
   id            text primary key,
   owner_id      text not null references users(id),

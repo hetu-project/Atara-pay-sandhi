@@ -43,6 +43,15 @@ func (h *Handler) Router() http.Handler {
 		r.Post("/uploads", h.Upload)
 		r.Get("/uploads/*", h.ServeUpload)
 
+		// 法币收款账户：只有自己的。OTC 的法币腿点对点走银行——账号是给对手方的，
+		// 钱不经过平台；对手方的银行信息属于那笔交易，不属于我的账户簿。
+		r.Route("/bank-accounts", func(r chi.Router) {
+			r.Get("/", h.BankAccounts)
+			r.Post("/", h.SaveBankAccount)
+			r.Post("/{id}", h.SaveBankAccount)
+			r.Delete("/{id}", h.DeleteBankAccount)
+		})
+
 		// 收款方与提现：链上转账用户自己签，平台记地址簿与合规材料
 		r.Route("/payees", func(r chi.Router) {
 			r.Get("/", h.Payees)
