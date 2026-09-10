@@ -208,6 +208,26 @@ ss -lntp | grep 8080
 
 最后一条最重要：如果 `:8080` 绑在 `0.0.0.0`，公网可以直连后端、绕过 nginx 的全部访问控制。
 
+## 清库重来
+
+演示机上经常要把所有历史数据清掉重新走一遍。**先停服务再删**——SQLite
+那个进程还开着文件句柄的时候，删掉的只是目录项，它照样读写同一个 inode，
+不重启的话页面上看到的还是老数据：
+
+```bash
+systemctl stop atara-pay
+rm -f  /srv/atara/data/atara.db /srv/atara/data/atara.db-wal /srv/atara/data/atara.db-shm
+rm -rf /srv/atara/data/uploads
+systemctl start atara-pay
+```
+
+起来会重建库、灌种子数据，上传目录也会自己建回来。
+
+**`git pull` 之后如果 schema 变过，必须走这一遍。** 只重启是不够的：
+`create table if not exists` 加不了列，也改不了列约束，老库会带着旧结构
+继续跑，症状五花八门——最难查的一种是老数据卡在某个状态再也不动，
+因为推动它的那一列在老库里根本不存在。
+
 ## 备份
 
 要备份的是两样：

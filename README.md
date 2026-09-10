@@ -1,13 +1,25 @@
 # atara-pay
 
 ```bash
-go run ./cmd/atara-pay      # 或 make run
+make run        # 起服务，保留现有数据
+make fresh      # 删掉全部历史数据再起——每次从零开始
+```
+
+`make fresh` 会先停掉占着端口的旧进程，再删库和上传文件，然后启动。
+顺序不能反：SQLite 那个进程还开着文件句柄的时候，删掉的只是目录项，
+它照样读写同一个 inode——不重启的话，界面上看到的还是老数据。
+
+库和上传目录的路径在 Makefile 顶上写死一份（`DB` / `UPLOADS`），
+`run` 和 `clean` 共用。要换位置就在命令行覆盖：
+
+```bash
+make fresh DB=./atara.db ADDR=:9000
 ```
 
 ```bash
 make test   
 make smoke 
-make clean
+make clean      # 只删不起
 ```
 
 - **钱直接进托管合约**，从不经过 Atara。放款与退回都是合约动作。
