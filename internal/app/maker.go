@@ -48,7 +48,7 @@ func (s *Service) SubmitMakerApplication(ctx context.Context, userID string,
 		return nil, httpx.Fail(http.StatusConflict, "KYC_NOT_APPROVED", "phase",
 			"your identity check has not cleared yet")
 	}
-	next := store.MakerApp{UserID: userID, Phase: req.Phase, FormJSON: string(req.Form),
+	next := store.MakerApp{UserID: userID, Phase: req.Phase, FormJSON: mergeForms(cur.FormJSON, req.Phase, req.Form),
 		KYCDone: cur.KYCDone, KYCOk: cur.KYCOk, ListingDone: cur.ListingDone, Approved: cur.Approved}
 	if req.Phase == "kyc" {
 		next.KYCDone = true
@@ -102,6 +102,30 @@ func (s *Service) SweepMakerReviews(ctx context.Context, now time.Time) error {
 		}
 	}
 	return nil
+}
+
+// mergeForms 把两段提交分别留着：{"kyc":{…},"listing":{…}}。
+//
+// 原来两段共用一个 blob，交完挂单配置，身份那份就被覆盖没了。那份材料是
+// 用户交上来的记录——回执里「查看提交内容 · 25 项」要照着它渲染，覆盖掉
+// 之后那条历史消息就只剩一句话。
+func mergeForms(prev, phase string, form json.RawMessage) string {
+	old := map[string]json.RawMessage{}
+	_ = json.Unmarshal([]byte(prev), &old)
+	out := map[string]json.RawMessage{}
+	// 只认这两个键。老库里存的是单张表单（键是 kind/surname 那些），
+	// 整个搬过来会把表单字段混成阶段名。
+	for _, k := range []string{"kyc", "listing"} {
+		if v, ok := old[k]; ok {
+			out[k] = v
+		}
+	}
+	out[phase] = form
+	b, err := json.Marshal(out)
+	if err != nil {
+		return string(form)
+	}
+	return string(b)
 }
 
 type MakerReviewReq struct {
