@@ -283,14 +283,14 @@ func dset(keys ...string) map[string]bool {
 // 数值逐条对齐 console.html 的 POOL。
 // reserve 是挂单方钱包里的链上余额，挂单锁的量从这里出。
 var pool = []seedOffer{
-	{"p1", "CrabWalk Trading", "D118500", "sell", "USDT", "CNY", []string{"ETH", "POLYGON"}, "7.31", "108015", "5000", "308015", 66, 70, 0, 320, "98.7", dset("kyc", "chain")},
-	{"p2", "Harbor Desk", "D137037", "sell", "USDT", "HKD", []string{"ETH"}, "7.81", "45211", "3000", "145211", 82, 78, 0, 180, "99.5", dset("kyc", "pof", "chain")},
-	{"p3", "Nova OTC", "D118537", "buy", "USDT", "USD", []string{"ETH", "POLYGON"}, "1.00", "180923", "1000", "400000", 83, 170, 0, 145, "99.6", dset("kyc", "pof", "stm", "sow", "chain")},
-	{"p4", "Pacific Bridge", "D118574", "sell", "USDC", "HKD", []string{"POLYGON", "ETH"}, "7.79", "8682", "3000", "28682", 84, 113, 0, 160, "99.6", dset("kyc", "pof", "stm", "poa", "chain")},
-	{"p5", "Blockstone", "D118611", "sell", "USDT", "USD", []string{"ETH"}, "1.001", "118034", "1000", "318034", 79, 142, 1, 210, "99.1", dset("kyc", "chain")},
-	{"p6", "Eastwind Desk", "D118648", "buy", "USDC", "CNY", []string{"POLYGON"}, "7.35", "114832", "5000", "250000", 77, 24, 0, 260, "99.0", dset("kyc", "pof")},
-	{"p7", "Silver Oak", "D118685", "sell", "USDC", "USD", []string{"POLYGON"}, "1.002", "42000", "1000", "142000", 74, 25, 0, 290, "98.9", dset("kyc", "chain")},
-	{"p8", "Mint Street", "D118722", "buy", "USDT", "HKD", []string{"ETH"}, "7.78", "60000", "3000", "160000", 75, 120, 3, 240, "98.5", dset("kyc", "pof", "stm")},
-	{"p9", "Lotus Capital", "D118759", "buy", "USDT", "CNY", []string{"ETH", "POLYGON"}, "7.28", "31134", "5000", "80000", 97, 125, 4, 62, "99.2", dset("kyc", "pof", "stm", "poa", "sow", "chain")},
-	{"p10", "Golden Gate", "D118796", "sell", "USDT", "CNY", []string{"ETH"}, "7.32", "18826", "3000", "118826", 90, 124, 0, 95, "99.8", dset("kyc", "pof", "stm", "sow", "chain")},
+	{"p1", "CrabWalk Trading", "D118500", "sell", "USDT", "CNY", []string{"BSC", "ETHEREUM"}, "7.31", "108015", "5000", "308015", 66, 70, 0, 320, "98.7", dset("kyc", "chain")},
+	{"p2", "Harbor Desk", "D137037", "sell", "USDT", "HKD", []string{"ETHEREUM"}, "7.81", "45211", "3000", "145211", 82, 78, 0, 180, "99.5", dset("kyc", "pof", "chain")},
+	{"p3", "Nova OTC", "D118537", "buy", "USDT", "USD", []string{"BSC", "ETHEREUM"}, "1.00", "180923", "1000", "400000", 83, 170, 0, 145, "99.6", dset("kyc", "pof", "stm", "sow", "chain")},
+	{"p4", "Pacific Bridge", "D118574", "sell", "USDC", "HKD", []string{"BASE", "BSC"}, "7.79", "8682", "3000", "28682", 84, 113, 0, 160, "99.6", dset("kyc", "pof", "stm", "poa", "chain")},
+	{"p5", "Blockstone", "D118611", "sell", "USDT", "USD", []string{"ETHEREUM"}, "1.001", "118034", "1000", "318034", 79, 142, 1, 210, "99.1", dset("kyc", "chain")},
+	{"p6", "Eastwind Desk", "D118648", "buy", "USDC", "CNY", []string{"BASE"}, "7.35", "114832", "5000", "250000", 77, 24, 0, 260, "99.0", dset("kyc", "pof")},
+	{"p7", "Silver Oak", "D118685", "sell", "USDC", "USD", []string{"BASE"}, "1.002", "42000", "1000", "142000", 74, 25, 0, 290, "98.9", dset("kyc", "chain")},
+	{"p8", "Mint Street", "D118722", "buy", "USDT", "HKD", []string{"ETHEREUM"}, "7.78", "60000", "3000", "160000", 75, 120, 3, 240, "98.5", dset("kyc", "pof", "stm")},
+	{"p9", "Lotus Capital", "D118759", "buy", "USDT", "CNY", []string{"BSC", "ETHEREUM"}, "7.28", "31134", "5000", "80000", 97, 125, 4, 62, "99.2", dset("kyc", "pof", "stm", "poa", "sow", "chain")},
+	{"p10", "Golden Gate", "D118796", "sell", "USDT", "CNY", []string{"ETHEREUM"}, "7.32", "18826", "3000", "118826", 90, 124, 0, 95, "99.8", dset("kyc", "pof", "stm", "sow", "chain")},
 }

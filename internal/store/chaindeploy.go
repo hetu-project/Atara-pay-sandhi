@@ -68,6 +68,38 @@ func (s *Store) SaveChainDeployment(ctx context.Context, d ChainDeployment) erro
 	})
 }
 
+// ChainDeployments 读所有链的部署记录，按网络码索引。
+func (s *Store) ChainDeployments(ctx context.Context) (map[string]*ChainDeployment, error) {
+	rows, err := s.db.QueryContext(ctx, `select network from chain_deployments`)
+	if err != nil {
+		return nil, err
+	}
+	var nets []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		nets = append(nets, n)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := map[string]*ChainDeployment{}
+	for _, n := range nets {
+		d, err := s.ChainDeployment(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		if d != nil {
+			out[n] = d
+		}
+	}
+	return out, nil
+}
+
 // ChainDeployment 读某条链的部署记录。查不到返回 nil，不是错误——
 // mock 链本来就没有合约，那时「没有记录」就是正确答案。
 func (s *Store) ChainDeployment(ctx context.Context, network string) (*ChainDeployment, error) {

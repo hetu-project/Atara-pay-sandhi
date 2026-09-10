@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 
+	"time"
+
 	"github.com/advaita/atara-pay/internal/domain/condition"
 	"github.com/advaita/atara-pay/internal/httpx"
 	"github.com/advaita/atara-pay/internal/money"
@@ -30,18 +32,42 @@ func (h *Handler) Fiats(w http.ResponseWriter, r *http.Request) {
 // 查不到记录说明这一版跑的是 mock 链：那条链上没有合约可调，回一份空的，
 // 前端据此知道不发交易，而不是拿着空地址去调用。
 func (h *Handler) Chain(w http.ResponseWriter, r *http.Request) {
-	d, err := h.St.ChainDeployment(r.Context(), h.Cfg.Chain.Network)
+	deps, err := h.St.ChainDeployments(r.Context())
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	if d == nil {
-		ok(w, store.ChainDeployment{
-			Impl: "mock", Network: "mock", Tokens: map[string]store.ChainToken{},
-		})
-		return
+	impl := h.Cfg.ChainImpl
+	out := make([]chainOut, 0, len(money.Chains()))
+	for _, c := range money.Chains() {
+		row := chainOut{Chain: c, Tokens: map[string]store.ChainToken{}}
+		if d := deps[c.Code]; d != nil && impl == "evm" {
+			// 有合约地址才算部署好。只有网络码没有地址的话，前端会拿着
+			// 空地址去 approve —— 那是把钱送给零地址。
+			row.Deployed = d.Escrow != ""
+			row.Escrow, row.Spending = d.Escrow, d.Spending
+			row.RPCURL = d.RPCURL
+			row.Tokens = d.Tokens
+			row.UpdatedAt = d.UpdatedAt.Format(time.RFC3339)
+		}
+		out = append(out, row)
 	}
-	ok(w, d)
+	ok(w, map[string]any{"impl": impl, "chains": out})
+}
+
+// chainOut 是一条链发给前端的样子：它是什么链，以及我们在上面部署了没有。
+//
+// 两件事必须分开说。「支持这条链」和「这条链上能挂卖单」不是一回事——
+// 后者要有托管合约。合并成一个布尔的话，没部署的链会看着像能用，
+// 用户选了、填完、签名时才被合约拒绝。
+type chainOut struct {
+	money.Chain
+	Deployed  bool                        `json:"deployed"`
+	Escrow    string                      `json:"escrow"`
+	Spending  string                      `json:"spending"`
+	RPCURL    string                      `json:"rpc_url"`
+	Tokens    map[string]store.ChainToken `json:"tokens"`
+	UpdatedAt string                      `json:"updated_at,omitempty"`
 }
 
 // Conditions 把条件原子的定义与联动选项发给前端，

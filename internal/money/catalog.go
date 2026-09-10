@@ -4,14 +4,20 @@ import "github.com/shopspring/decimal"
 
 func d(s string) decimal.Decimal { v, _ := decimal.NewFromString(s); return v }
 
-// 数字资产目录。scale 与网络对齐前端 console.html 的 ASSETS / NETS_OF。
+// 数字资产目录。
+//
+// Networks 里写的是 chains.go 那四条链的网络码，不再是几个标签——
+// 挂单说自己在哪条链上，钱包就知道该切到哪条。写标签的时候这两件事是断开的：
+// 挂单上写着 ETH，币却锁在 BSC 测试网的合约里。
 var cryptos = []Asset{
-	// 登录只剩 MetaMask，用户手里是 0x 地址；再给 USDT 挂一条 TRON，
-	// 同一张订单上就会出现 T 开头的网络名配 0x 的托管合约。这一版全走 EVM。
-	{Code: "USDT", Kind: KindCrypto, Name: "Tether USD", Symbol: "₮", Scale: 6, Networks: []string{"ETH", "POLYGON"}, USDRate: d("1")},
-	{Code: "USDC", Kind: KindCrypto, Name: "USD Coin", Symbol: "$", Scale: 6, Networks: []string{"POLYGON", "ETH"}, USDRate: d("1")},
-	{Code: "BTC", Kind: KindCrypto, Name: "Bitcoin", Symbol: "₿", Scale: 8, Networks: []string{"BTC"}, USDRate: d("93600")},
-	{Code: "ETH", Kind: KindCrypto, Name: "Ether", Symbol: "Ξ", Scale: 18, Networks: []string{"ETH"}, USDRate: d("3130")},
+	{Code: "USDT", Kind: KindCrypto, Name: "Tether USD", Symbol: "₮", Scale: 6,
+		Networks: []string{"BSC", "ETHEREUM", "BASE", "BSC-TESTNET"}, USDRate: d("1")},
+	{Code: "USDC", Kind: KindCrypto, Name: "USD Coin", Symbol: "$", Scale: 6,
+		Networks: []string{"BSC", "ETHEREUM", "BASE", "BSC-TESTNET"}, USDRate: d("1")},
+	// BTC 与 ETH 只是余额里的历史资产，不可交易（Tradable 是另一张表），
+	// 所以它们没有网络——给它们挂链只会让人以为能挂单。
+	{Code: "BTC", Kind: KindCrypto, Name: "Bitcoin", Symbol: "₿", Scale: 8, USDRate: d("93600")},
+	{Code: "ETH", Kind: KindCrypto, Name: "Ether", Symbol: "Ξ", Scale: 18, USDRate: d("3130")},
 }
 
 // 法币目录按走廊分组，对齐前端 FIATS。法币不入账——它们只出现在目录、
