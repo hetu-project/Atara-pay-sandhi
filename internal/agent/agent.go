@@ -49,12 +49,22 @@ type AssessInput struct {
 	Deals      int
 	Disputes   int
 	Docs       map[string]bool
+	// Seed 让同一个对手方在不同的单上得到不同的分。
+	//
+	// 不给的话，同一条挂单被谁吃、吃几次，七个 agent 都报同一组数字——
+	// 界面上就成了「这套评分跟这一单无关」。传工单号：同一单任何时候看
+	// 都是同一组数（评估是对下单那一刻的判断，判断做完就固定），不同单
+	// 之间又互不相同。
+	Seed string
 }
 
 type Vote struct {
 	Agent   string `json:"agent"`
 	Verdict string `json:"verdict"` // pass | flag
 	Note    string `json:"note"`
+	// Score 是这个 agent 单独给的分，0 表示它没给分。
+	// 界面上候命排每个名字下面的那个数字用它。
+	Score int `json:"score,omitempty"`
 }
 
 type Assessment struct {

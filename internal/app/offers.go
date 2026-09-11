@@ -375,7 +375,7 @@ func (s *Service) Take(ctx context.Context, takerID, offerID string, req TakeReq
 	peer, _ := s.St.Merchant(ctx, o.MakerID)
 	snap := ""
 	t0 := time.Now()
-	if a, err := s.Assess(ctx, o.ID); err == nil {
+	if a, err := s.Assess(ctx, o.ID, id); err == nil {
 		// 真正花了多久，量出来存进去。界面拿它印「Assessed in Ns」；
 		// 不到一秒就不印秒数——见 agent.Assessment.TookMs。
 		a.TookMs = time.Since(t0).Milliseconds()
@@ -456,12 +456,20 @@ func (s *Service) checkLot(o *model.Offer, fiatAmt decimal.Decimal) *httpx.Err {
 }
 
 // Assess 是对手方风控共识：挂单卡点进去要看的那张评估。
-func (s *Service) Assess(ctx context.Context, offerID string) (agent.Assessment, error) {
+// Assess 跑一次对手方评估。
+//
+// seed 决定每个 agent 那个分：传工单号的话，同一单任何时候看都是同一组数，
+// 不同单之间又互不相同。空 seed 是「还没有工单」的场合（Discover 上先看一眼
+// 这个对手方），那时退回按挂单号算。
+func (s *Service) Assess(ctx context.Context, offerID, seed string) (agent.Assessment, error) {
 	o, err := s.St.Offer(ctx, offerID)
 	if err != nil {
 		return agent.Assessment{}, httpx.NotFound("offer")
 	}
-	in := agent.AssessInput{PeerName: o.Maker.DisplayName}
+	if seed == "" {
+		seed = offerID
+	}
+	in := agent.AssessInput{PeerName: o.Maker.DisplayName, Seed: seed}
 	if o.Merchant != nil {
 		in.TrustScore, in.Deals, in.Disputes, in.Docs =
 			o.Merchant.TrustScore, o.Merchant.Deals, o.Merchant.Disputes, o.Merchant.Docs

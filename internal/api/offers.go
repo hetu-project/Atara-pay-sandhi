@@ -75,7 +75,7 @@ func (h *Handler) Dossier(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Assessment(w http.ResponseWriter, r *http.Request) {
-	a, err := h.Svc.Assess(r.Context(), chi.URLParam(r, "id"))
+	a, err := h.Svc.Assess(r.Context(), chi.URLParam(r, "id"), "")
 	if err != nil {
 		httpx.Error(w, err)
 		return
