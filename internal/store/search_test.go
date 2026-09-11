@@ -76,3 +76,40 @@ func TestSearchAccountsJoinDoesNotAmbiguate(t *testing.T) {
 		t.Fatalf("按名字查报错：%v", err)
 	}
 }
+
+// EVM 地址的大小写是 EIP-55 校验和，不是地址的一部分。按小写查不到的话，
+// 前端会拿到 UNKNOWN_ACTOR、清掉本机身份——一次大小写差异表现成莫名其妙
+// 被登出。
+func TestUserByAddressIgnoresEVMCase(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	if _, err := st.DB().Exec(
+		`insert into users(id,address,display_name,created_at) values
+		 ('ue','0xAbCdEf0123456789012345678901234567890123','Checksummed',datetime('now'))`); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []string{
+		"0xAbCdEf0123456789012345678901234567890123",
+		"0xabcdef0123456789012345678901234567890123",
+		"0xABCDEF0123456789012345678901234567890123",
+	} {
+		u, err := st.UserByAddress(ctx, a)
+		if err != nil || u.ID != "ue" {
+			t.Fatalf("按 %q 查不到：%v", a, err)
+		}
+	}
+}
+
+// base58 的地址不能忽略大小写——那会把两个不同的地址当成同一个。
+func TestUserByAddressKeepsBase58Case(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	if _, err := st.DB().Exec(
+		`insert into users(id,address,display_name,created_at) values
+		 ('ut','TQ5n7YabcdEFGHjkmnPQRstuvwxyz1234','Tron',datetime('now'))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UserByAddress(ctx, "tq5n7yABCDefghJKMNPqrSTUVWXYZ1234"); err == nil {
+		t.Fatal("base58 地址被当成大小写不敏感了")
+	}
+}

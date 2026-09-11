@@ -21,8 +21,21 @@ func (s *Store) User(ctx context.Context, id string) (*model.User, error) {
 }
 
 // UserByAddress 是登录的入口：地址就是账户。
+// UserByAddress 按地址查账户。
+//
+// 0x 开头的按大小写不敏感比：EVM 地址里的大小写是 EIP-55 校验和，不是地址
+// 的一部分——同一个地址，钱包报小写、浏览器显示校验和大小写，两者是同一个
+// 账户。原来是精确比，于是小写形式会得到「no such user」，而前端拿到这个错
+// 会把本机身份清掉、退回登录页——一次大小写差异表现成「莫名其妙被登出」。
+//
+// 非 0x 的仍然精确比：TRON 的 base58 地址大小写是有意义的，忽略大小写会把
+// 两个不同的地址当成同一个。
 func (s *Store) UserByAddress(ctx context.Context, addr string) (*model.User, error) {
-	return scanUser(s.db.QueryRowContext(ctx, `select `+userCols+` from users where address=?`, addr).Scan)
+	q := `select ` + userCols + ` from users where address=?`
+	if len(addr) > 1 && (addr[0] == '0' && (addr[1] == 'x' || addr[1] == 'X')) {
+		q = `select ` + userCols + ` from users where lower(address)=lower(?)`
+	}
+	return scanUser(s.db.QueryRowContext(ctx, q, addr).Scan)
 }
 
 // RenameUser 改展示名。地址才是账户的唯一键，展示名只是给人看的，
