@@ -1,4 +1,4 @@
-.PHONY: run run-chain fresh fresh-chain build test fmt vet clean smoke
+.PHONY: serve run run-chain fresh fresh-chain build test fmt vet clean smoke
 
 # 库和上传目录在这里写一次，run / clean / fresh 都用它。
 #
@@ -13,6 +13,27 @@ PORT     = $(lastword $(subst :, ,$(ADDR)))
 
 ENV = ATARA_DB_PATH=$(DB) ATARA_UPLOAD_DIR=$(UPLOADS) \
       ATARA_HTTP_ADDR=$(ADDR) ATARA_CORS_ORIGINS=$(WEB)
+
+# ── 一条命令起整套 ──
+#
+#   make serve                  前后端都起，保留历史数据，连 .env 里的真链
+#   make serve FRESH=1          先删掉全部历史数据再起
+#   make serve CHAIN=mock       不连真链，走 mock（不发任何链上交易）
+#   make serve WEB_HOST=0.0.0.0 让同网段的别的机器也能打开
+#
+# Ctrl-C 一起停。后端始终只听 127.0.0.1：对外的那一面是 Vite，它把 /api
+# 转进来。这套演示没有鉴权——X-Atara-User 头写谁就是谁——所以那个接口不该
+# 直接暴露在网络上，哪怕只是内网。
+WEB_DIR  ?= ../advaita-web/app
+WEB_HOST ?= 127.0.0.1
+WEB_PORT ?= 5173
+CHAIN    ?= real
+FRESH    ?=
+
+serve:          ## 起前后端（FRESH=1 先清库，CHAIN=mock 不连真链）
+	@DB=$(DB) UPLOADS=$(UPLOADS) ADDR=$(ADDR) \
+	 WEB_DIR=$(WEB_DIR) WEB_HOST=$(WEB_HOST) WEB_PORT=$(WEB_PORT) \
+	 CHAIN=$(CHAIN) FRESH=$(FRESH) bash scripts/serve.sh
 
 run:            ## 起服务（保留现有数据，mock 链）
 	$(ENV) go run ./cmd/atara-pay
