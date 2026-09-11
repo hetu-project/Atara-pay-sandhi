@@ -417,7 +417,8 @@ func (s *Service) PostChat(ctx context.Context, ownerID, peerID, body string) (*
 		return nil, httpx.Fail(http.StatusBadRequest, "EMPTY_MESSAGE", "body", "nothing to send")
 	}
 	m := &model.Message{Author: "me", Kind: "chat", Body: body}
-	if err := s.St.Post(ctx, ownerID, peerID, m); err != nil {
+	// 写双方：只写自己那一行的话，对方的会话里永远看不到这句话。
+	if err := s.St.PostBoth(ctx, ownerID, peerID, m); err != nil {
 		return nil, err
 	}
 	return m, nil

@@ -151,6 +151,8 @@ type assessJSON struct {
 	Votes     []agent.Vote `json:"votes"`
 	Sources   int          `json:"sources"`
 	Records   int          `json:"records"`
+	// TookMs 是这次评估真正花了多少毫秒。前端据此决定印不印秒数。
+	TookMs int64 `json:"took_ms,omitempty"`
 }
 
 // evidenceJSON 是结算记录：这单凭什么放的款。

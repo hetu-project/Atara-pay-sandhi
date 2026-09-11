@@ -374,7 +374,11 @@ func (s *Service) Take(ctx context.Context, takerID, offerID string, req TakeReq
 	// 之后只读——见 app/score.go 与 money/fee.go 里的说明。
 	peer, _ := s.St.Merchant(ctx, o.MakerID)
 	snap := ""
+	t0 := time.Now()
 	if a, err := s.Assess(ctx, o.ID); err == nil {
+		// 真正花了多久，量出来存进去。界面拿它印「Assessed in Ns」；
+		// 不到一秒就不印秒数——见 agent.Assessment.TookMs。
+		a.TookMs = time.Since(t0).Milliseconds()
 		if b, err := json.Marshal(a); err == nil {
 			snap = string(b)
 		}
@@ -407,7 +411,9 @@ func (s *Service) Take(ctx context.Context, takerID, offerID string, req TakeReq
 			"Matched with "+o.Maker.DisplayName, map[string]string{"offer_id": o.ID}); err != nil {
 			return err
 		}
-		return store.PostTx(tx, takerID, o.MakerID, &model.Message{
+		// 两边都要看到这一单。原来只写吃单方那一行，做市方的会话里
+		// 什么都没有——他的币被锁进了托管，而界面上没有任何迹象。
+		return store.PostBothTx(tx, takerID, o.MakerID, &model.Message{
 			Author: "system", Kind: "order",
 			Body: "Matched with " + o.Maker.DisplayName, OrderID: ord.ID,
 		})

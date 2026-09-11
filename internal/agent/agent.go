@@ -72,6 +72,13 @@ type Assessment struct {
 	// 让接口层按票数编一个好看的数，就是拿一句假话去支撑一个判断。
 	Sources int `json:"sources"`
 	Records int `json:"records"`
+
+	// TookMs 是这次评估真正花了多少毫秒，由调用方在跑完之后填。
+	//
+	// 界面上「Assessed in 13s」那一行用它。不填就只显示「Assessed」——
+	// 参照那边的秒数是动画自己跑掉的时间，我们这边评估是瞬时算完的，
+	// 编一个像样的秒数等于拿一句假话去撑「我们认真查过」这个印象。
+	TookMs int64 `json:"took_ms,omitempty"`
 }
 
 type RiskAssessor interface {
