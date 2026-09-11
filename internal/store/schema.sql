@@ -184,6 +184,20 @@ create table if not exists messages (
 );
 create index if not exists idx_messages_thread on messages(owner_id, peer_id, created_at);
 
+-- 每条会话读到哪儿了。一行一条会话，不是一行一条消息：未读只需要一个
+-- 分界线，逐条打标记的话，「全部标已读」要写几百行，而读到哪儿这件事
+-- 本来就只有一个答案。
+--
+-- 未读只数对方说的话（author='them'）。系统播报不算——「Matched with X」
+-- 常常是我自己下单触发的，给自己的动作挂一个未读角标，人会去点，然后
+-- 发现没有任何新东西。
+create table if not exists thread_reads (
+  owner_id text not null references users(id),
+  peer_id  text not null references users(id),
+  read_at  text not null,
+  primary key (owner_id, peer_id)
+);
+
 -- 链上动作的观察日志。不是账本——余额不在这里，这里只记"我们看到链上发生了什么"。
 create table if not exists chain_events (
   id         integer primary key autoincrement,

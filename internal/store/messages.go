@@ -102,6 +102,8 @@ type ThreadSummary struct {
 	Last     string `json:"last"`
 	LastAt   string `json:"last_at"`
 	Count    int    `json:"count"`
+	// Unread 是对方说了、我还没看的条数。左栏那个蓝色角标用它。
+	Unread int `json:"unread"`
 }
 
 func (s *Store) Threads(ctx context.Context, ownerID string) ([]ThreadSummary, error) {
@@ -109,7 +111,16 @@ func (s *Store) Threads(ctx context.Context, ownerID string) ([]ThreadSummary, e
 		`select m.peer_id, u.display_name, count(*),
 		        (select body from messages x where x.owner_id=m.owner_id and x.peer_id=m.peer_id
 		          order by x.created_at desc, x.id desc limit 1),
-		        max(m.created_at)
+		        max(m.created_at),
+		        -- 未读：对方说的、落在我上次读过这条会话之后的。
+		        -- 从没读过（没有 thread_reads 那一行）就是全部未读，所以
+		        -- coalesce 成空串——任何时间戳都排在它后面。
+		        (select count(*) from messages y
+		          where y.owner_id=m.owner_id and y.peer_id=m.peer_id
+		            and y.author='them'
+		            and y.created_at > coalesce(
+		                  (select r.read_at from thread_reads r
+		                    where r.owner_id=m.owner_id and r.peer_id=m.peer_id), ''))
 		   from messages m join users u on u.id=m.peer_id
 		  where m.owner_id=? group by m.peer_id, u.display_name
 		  order by max(m.created_at) desc`, ownerID)
@@ -120,10 +131,22 @@ func (s *Store) Threads(ctx context.Context, ownerID string) ([]ThreadSummary, e
 	out := []ThreadSummary{}
 	for rows.Next() {
 		var t ThreadSummary
-		if err := rows.Scan(&t.PeerID, &t.PeerName, &t.Count, &t.Last, &t.LastAt); err != nil {
+		if err := rows.Scan(&t.PeerID, &t.PeerName, &t.Count, &t.Last, &t.LastAt, &t.Unread); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// MarkThreadRead 把一条会话标成「读到此刻」。
+//
+// 存的是时刻而不是条数：条数会被后来的消息推着走，而「我读到哪儿了」
+// 是一个不该被将来的事改写的事实。
+func (s *Store) MarkThreadRead(ctx context.Context, ownerID, peerID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`insert into thread_reads(owner_id,peer_id,read_at) values(?,?,?)
+		 on conflict(owner_id,peer_id) do update set read_at=excluded.read_at`,
+		ownerID, peerID, ts(Now()))
+	return err
 }

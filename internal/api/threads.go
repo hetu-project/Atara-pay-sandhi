@@ -2,6 +2,7 @@ package api
 
 import (
 	"github.com/advaita/atara-pay/internal/domain/order"
+	"log"
 	"net/http"
 
 	"github.com/advaita/atara-pay/internal/httpx"
@@ -36,6 +37,16 @@ func (h *Handler) Thread(w http.ResponseWriter, r *http.Request) {
 			js = append(js, h.toOrder(r.Context(), me, o, false))
 		}
 		out["orders"] = js
+	}
+	// 取这条会话就是在读它——响应里装的就是那些消息。所以标已读放在这儿，
+	// 而不是另开一个 POST 让前端记得调：前端本来就每 3 秒拉一次这个端点，
+	// 于是「看着的时候来的新消息」也会立刻清掉，不会闪一下角标。
+	//
+	// GET 带副作用是有代价的，这里认下来：只有会话页调它，没有别的路径会
+	// 在用户没看的时候把它清掉。标失败不影响这次读——角标晚一轮消失，
+	// 比因为一张计数表写不进去就让人读不到消息要好。
+	if err := h.St.MarkThreadRead(r.Context(), me, chi.URLParam(r, "peer")); err != nil {
+		log.Printf("thread read mark failed for %s/%s: %v", me, chi.URLParam(r, "peer"), err)
 	}
 	ok(w, out)
 }
