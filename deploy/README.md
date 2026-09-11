@@ -236,7 +236,7 @@ systemctl start atara-pay
 
 ```bash
 # 前端（静态资源，没有数据可清）
-cd ~/atara && git pull && cd app && npm run build \
+cd ~/atara && git pull && cd app && npm ci && npm run build \
   && rm -rf /srv/atara/dist/* && cp -r dist/. /srv/atara/dist/ \
   && chown -R atara:atara /srv/atara
 
@@ -255,6 +255,13 @@ cd ~/Atara-pay-sandhi && git pull \
   && rm -rf /srv/atara/data/uploads \
   && systemctl start atara-pay
 ```
+
+前端那条里的 `npm ci` 不能省。它严格按 `package-lock.json` 装，跟本地验证过的
+完全一致；`npm install` 会悄悄升次版本，于是「我这儿好的、服务器上坏的」。
+
+省掉它的后果不是「装不上」，而是更难查的那种：新加的依赖如果恰好是某个包的
+传递依赖，模块能解析，只有类型包缺着，报出来是一个看着像代码错误的 TS 报错
+（Could not find a declaration file for module 'x'）。
 
 先编再停：编译失败时服务还好好跑着，而不是停在半路。用 `&&` 串起来也是
 同一个道理——前一步没成，后面一步都不走。
