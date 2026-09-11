@@ -73,6 +73,11 @@ var otcEdges = []edge{
 	{OTCTake, S1, EvCancel, owner, Cancelled, TermCancelled}, // 还没入金就反悔
 
 	{OTCTake, S3, EvReceipt, both, S3V, TermNone}, // 谁付法币谁传回执
+	// 付款这一步也能开争议。钱已经出去了，而回执还没交——「打错账户」「对方说
+	// 没收到」都发生在这个窗口里。原来只有 S3V 能开，于是这种情况下用户唯一
+	// 的出口是 Cancel order：币退还给卖方，自己还记一次违约，而他明明已经
+	// 把钱打出去了。
+	{OTCTake, S3, EvDispute, both, Disputed, TermDisputed},
 
 	// 核验是人工动作，只有收法币的一方能做。放行不等对方开口，
 	// 等的是回执本身被核过——这正是 OTC 不需要对方点确认的原因。

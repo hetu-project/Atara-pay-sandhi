@@ -117,8 +117,20 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Dispute(w http.ResponseWriter, r *http.Request) {
+	// 案卷跟着请求一起来：分类、经过、可选的凭据。收下来存进这一单的事件里，
+	// 不收的话用户填的那些字就落到地上了——而界面上它看起来是提交成功的。
+	var req struct {
+		Kind    string `json:"kind"`
+		Details string `json:"details"`
+		FileRef string `json:"file_ref"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	h.transition(w, r, func(id string) (*order.Order, error) {
-		return h.Svc.Dispute(r.Context(), h.actorID(r), id)
+		return h.Svc.Dispute(r.Context(), h.actorID(r), id,
+			app.DisputeCase{Kind: req.Kind, Details: req.Details, FileRef: req.FileRef})
 	})
 }
 

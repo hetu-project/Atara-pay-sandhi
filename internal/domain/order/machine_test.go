@@ -89,3 +89,17 @@ func TestTerminalIsReadOnly(t *testing.T) {
 		}
 	}
 }
+
+// 付款窗口内也要能开争议：钱已经出去、回执还没交的时候出了问题——打错账户、
+// 对方说没收到——那时唯一的出口不该是「取消订单」，那等于自己认一次违约。
+func TestDisputeFromPayStep(t *testing.T) {
+	for _, a := range []Actor{ActorOwner, ActorCounterparty} {
+		term, err := Check(OTCTake, S3, EvDispute, a, Disputed)
+		if err != nil {
+			t.Fatalf("%s 在 S3 开不了争议：%v", a, err)
+		}
+		if term != TermDisputed {
+			t.Fatalf("%s 的终态是 %q", a, term)
+		}
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"github.com/advaita/atara-pay/internal/money"
 	"github.com/advaita/atara-pay/internal/settlement"
 	"github.com/advaita/atara-pay/internal/store"
+	"strings"
 )
 
 type CreateOrderReq struct {
@@ -250,12 +251,35 @@ func (s *Service) Cancel(ctx context.Context, actorID, orderID string) (*order.O
 		func(tx *sql.Tx, oo *order.Order) error { return s.releaseReservation(tx, oo) })
 }
 
-func (s *Service) Dispute(ctx context.Context, actorID, orderID string) (*order.Order, error) {
+// DisputeCase 是开案时用户填的那张表。
+//
+// 三样都存进这一单的事件里：事件流本来就是「这一单发生过什么」的账本，案卷是
+// 其中一件事。不另开一张表——争议的上下文（金额、对手方、每一步的时刻）全在
+// 这条流上，拆出去就要在两处各维护一份同样的东西。
+type DisputeCase struct {
+	// Kind 是那几个预设分类之一，或者 Something else。
+	Kind string
+	// Details 是用户自己写的经过。
+	Details string
+	// FileRef 是上传的凭据，可以没有。
+	FileRef string
+}
+
+func (s *Service) Dispute(ctx context.Context, actorID, orderID string, c DisputeCase) (*order.Order, error) {
 	if _, err := s.mine(ctx, actorID, orderID); err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(c.Details) == "" {
+		return nil, httpx.Fail(http.StatusUnprocessableEntity, "EMPTY_DETAILS", "details",
+			"say what happened — the case goes to a person, and an empty one cannot be reviewed")
+	}
+	payload := map[string]string{"kind": c.Kind, "details": strings.TrimSpace(c.Details)}
+	if c.FileRef != "" {
+		payload["file_ref"] = c.FileRef
+	}
 	return s.advance(ctx, orderID, order.EvDispute, order.ActorOwner, order.Disputed,
-		"You disputed within the window — escalated to review. Funds stay locked in the contract.", nil, nil, nil)
+		"You disputed within the window — escalated to review. Funds stay locked in the contract.",
+		payload, nil, nil)
 }
 
 type AcceptReq struct {
