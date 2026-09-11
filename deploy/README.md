@@ -221,12 +221,46 @@ rm -rf /srv/atara/data/uploads
 systemctl start atara-pay
 ```
 
-起来会重建库、灌种子数据，上传目录也会自己建回来。
+起来是一个**空库**：没有做市方、没有挂单、没有联系人、没有余额，一切都从
+界面上建出来。要那套演示数据，在 unit 里加 `Environment=ATARA_SEED=true`。
 
 **`git pull` 之后如果 schema 变过，必须走这一遍。** 只重启是不够的：
 `create table if not exists` 加不了列，也改不了列约束，老库会带着旧结构
 继续跑，症状五花八门——最难查的一种是老数据卡在某个状态再也不动，
 因为推动它的那一列在老库里根本不存在。
+
+### 拉新代码顺带清库
+
+平时部署就是「拉代码、编、重启」；要连历史数据一起清掉，只是把中间那个
+`restart` 拆成 stop / 删 / start：
+
+```bash
+# 前端（静态资源，没有数据可清）
+cd ~/atara && git pull && cd app && npm run build \
+  && rm -rf /srv/atara/dist/* && cp -r dist/. /srv/atara/dist/ \
+  && chown -R atara:atara /srv/atara
+
+# 后端 —— 保留历史数据
+cd ~/Atara-pay-sandhi && git pull \
+  && CGO_ENABLED=0 go build -o /srv/atara/bin/atara-pay ./cmd/atara-pay \
+  && chown atara:atara /srv/atara/bin/atara-pay \
+  && systemctl restart atara-pay
+
+# 后端 —— 连历史数据一起清掉
+cd ~/Atara-pay-sandhi && git pull \
+  && CGO_ENABLED=0 go build -o /srv/atara/bin/atara-pay ./cmd/atara-pay \
+  && chown atara:atara /srv/atara/bin/atara-pay \
+  && systemctl stop atara-pay \
+  && rm -f  /srv/atara/data/atara.db /srv/atara/data/atara.db-wal /srv/atara/data/atara.db-shm \
+  && rm -rf /srv/atara/data/uploads \
+  && systemctl start atara-pay
+```
+
+先编再停：编译失败时服务还好好跑着，而不是停在半路。用 `&&` 串起来也是
+同一个道理——前一步没成，后面一步都不走。
+
+不能把 `stop / rm / start` 换成 `rm` 加 `restart`：删的时候进程还开着那个
+文件句柄，删掉的只是目录项，它照样读写同一个 inode。
 
 ## 备份
 
