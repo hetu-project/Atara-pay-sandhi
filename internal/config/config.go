@@ -83,7 +83,20 @@ type Config struct {
 	// KYC 是 ID Analyzer / DocuPass 的接入参数。同样不在启动时炸：
 	// 没配就只是身份核验这一件事不可用。
 	KYC KYCConfig
+
+	Desk DeskConfig
 }
+
+type DeskConfig struct {
+	APIKey  string
+	BaseURL string
+	Model   string
+	// MaxTokens 限的是单次回答的长度，不是次数。没有它一次跑飞的回答
+	// 能一直吐到超时，界面上是一屏停不下来的字。
+	MaxTokens int
+}
+
+func (d DeskConfig) Configured() bool { return d.APIKey != "" }
 
 // KYCConfig 是 ID Analyzer（DocuPass）的接入参数。
 //
