@@ -172,6 +172,41 @@ func (s *Store) PendingMakerApps(ctx context.Context) ([]MakerApp, error) {
 	return out, rows.Err()
 }
 
+// ReviewedMakerApps 列出审过的申请（有 reviewed_at 的），最近审的在前。
+//
+// 注意这是审核历史的近似，不是完整时间线：每份申请在库里只有一行，重审会
+// 覆盖上一次的结果，所以这里给的是「当前状态 + 最近一次审核的人和时间」。
+// 真正的逐次留痕要一张 append-only 的审计表——那是下一步，先不动写路径。
+func (s *Store) ReviewedMakerApps(ctx context.Context, limit int) ([]MakerApp, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`select a.user_id,a.phase,a.kyc_done,a.kyc_ok,a.listing_done,a.approved,a.form_json,
+		        a.reject_reason,a.submitted_at,a.reviewed_at,coalesce(a.reviewer_id,''),a.updated_at,
+		        a.auto_review_at,u.display_name
+		   from maker_applications a
+		   join users u on u.id = a.user_id
+		  where a.reviewed_at is not null
+		  order by a.reviewed_at desc
+		  limit ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []MakerApp{}
+	for rows.Next() {
+		var name string
+		a, err := scanMakerApp(rows.Scan, &name)
+		if err != nil {
+			return nil, err
+		}
+		a.DisplayName = name
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
 // DueMakerApps 找出到点该自动放行的申请。
 //
 // 时间戳存在库里，不是起一个睡 5 秒的 goroutine：进程重启后 goroutine 就没了，

@@ -40,6 +40,16 @@ func (h *Handler) PendingMakerApplications(w http.ResponseWriter, r *http.Reques
 	ok(w, map[string]any{"applications": as})
 }
 
+// ReviewedMakerApplications 是审核历史（已审过的申请，最近在前）。只读。
+func (h *Handler) ReviewedMakerApplications(w http.ResponseWriter, r *http.Request) {
+	as, err := h.St.ReviewedMakerApps(r.Context(), limitParam(r))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, map[string]any{"applications": as})
+}
+
 // ReviewMakerApplication 是真人审核入口，挂在 reviewer 角色后面。
 func (h *Handler) ReviewMakerApplication(w http.ResponseWriter, r *http.Request) {
 	var req app.MakerReviewReq

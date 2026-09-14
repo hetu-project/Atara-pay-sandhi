@@ -19,6 +19,7 @@ import (
 	"github.com/advaita/atara-pay/internal/chain/evmchain"
 	"github.com/advaita/atara-pay/internal/chain/mockchain"
 	"github.com/advaita/atara-pay/internal/config"
+	"github.com/advaita/atara-pay/internal/desk"
 	"github.com/advaita/atara-pay/internal/scheduler"
 	"github.com/advaita/atara-pay/internal/store"
 	"github.com/shopspring/decimal"
@@ -71,6 +72,13 @@ func main() {
 			"要那套演示数据就设 ATARA_SEED=true。")
 	}
 	svc := app.New(st, ag, ch, cfg, auth.NewConfirmations(st))
+	/* 对话台的模型。没配密钥就留 nil——那时 desk 照常收消息、回一句固定话术，
+	   不影响别的功能，所以这里不是致命错误。 */
+	deskLabel := "off"
+	if cfg.Desk.Configured() {
+		svc.Desk = desk.New(cfg.Desk.APIKey, cfg.Desk.BaseURL, cfg.Desk.Model, cfg.Desk.MaxTokens)
+		deskLabel = cfg.Desk.Model
+	}
 	go scheduler.New(svc).Run(ctx)
 
 	srv := &http.Server{
@@ -79,8 +87,8 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
-		log.Printf("atara-pay listening on %s · db=%s · agent=%s · chain=%s · custody=self · demo-timing=%v",
-			cfg.Addr, cfg.DBPath, cfg.AgentImpl, chainLabel, cfg.DemoTiming)
+		log.Printf("atara-pay listening on %s · db=%s · agent=%s · chain=%s · desk=%s · custody=self · demo-timing=%v",
+			cfg.Addr, cfg.DBPath, cfg.AgentImpl, chainLabel, deskLabel, cfg.DemoTiming)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("serve: %v", err)
 		}

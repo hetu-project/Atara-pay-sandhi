@@ -42,6 +42,15 @@ type Funder interface {
 //
 // full=true 恢复整套演示数据（ATARA_SEED=true）。
 func (s *Store) Seed(ctx context.Context, ch Funder, full bool) error {
+	/* 对话台的账号要先补，而且每次启动都补一次。
+	   下面那句「库里有人就直接返回」意味着**已经跑起来过的库永远走不到种子
+	   那一段**——而 messages.peer_id 上有 `references users(id)`，没有这一行，
+	   老库上发给 Atara AI 的第一句话就会插失败。新功能加在种子里，就得自己
+	   负责让老库也有它。 */
+	if err := s.ensureDesk(ctx, ch); err != nil {
+		return err
+	}
+
 	var n int
 	if err := s.db.QueryRowContext(ctx, `select count(*) from users`).Scan(&n); err != nil {
 		return err
@@ -102,7 +111,7 @@ func (s *Store) Seed(ctx context.Context, ch Funder, full bool) error {
 		}
 
 		if !full {
-			// 到此为止：两个账户，别的什么都没有。
+			// 到此为止：两个账户（对话台已由 ensureDesk 建好），别的什么都没有。
 			return nil
 		}
 
@@ -270,6 +279,11 @@ const (
 	// display_name 兜底匹配）。
 	DemoHandle = "Demo"
 
+	// DeskID 是 Atara AI 对话台的账号。导出是因为 app 层要判断
+	// 「这条消息是发给平台的还是发给人的」——两者走的路完全不同。
+	DeskID   = "user-desk"
+	deskSeed = "desk"
+
 	reviewerID = "user-reviewer"
 	// ReviewerAddress 是审核账号的地址；X-Atara-User 传它，或者传 "reviewer" 也认
 	// （落到 UserByHandle 的 display_name 兜底匹配，跟 Demo 是同一套路）。
@@ -308,4 +322,18 @@ var pool = []seedOffer{
 	{"p8", "Mint Street", "D118722", "buy", "USDT", "HKD", []string{"ETHEREUM"}, "7.78", "60000", "3000", "160000", 75, 120, 3, 240, "98.5", dset("kyc", "pof", "stm")},
 	{"p9", "Lotus Capital", "D118759", "buy", "USDT", "CNY", []string{"BSC", "ETHEREUM"}, "7.28", "31134", "5000", "80000", 97, 125, 4, 62, "99.2", dset("kyc", "pof", "stm", "poa", "sow", "chain")},
 	{"p10", "Golden Gate", "D118796", "sell", "USDT", "CNY", []string{"ETHEREUM"}, "7.32", "18826", "3000", "118826", 90, 124, 0, 95, "99.8", dset("kyc", "pof", "stm", "sow", "chain")},
+}
+
+// ensureDesk 保证 Atara AI 那个账号存在。每次启动都跑，幂等。
+//
+// 它是 kind='agent'，不是人：schema 的 CHECK 里本来就留了这一档。
+// 地址照旧按当前链的格式派生——users.address 是 unique not null，而且前端
+// 按地址取头像色。这个地址不收钱，托管合约里也没有它。
+func (s *Store) ensureDesk(ctx context.Context, ch Funder) error {
+	_, err := s.db.ExecContext(ctx,
+		`insert or ignore into users(id,address,display_name,email,kind,wallet_kind,login_method,hue,created_at)
+		 values(?,?,?,?,?,?,?,?,?)`,
+		DeskID, ch.DeriveAddress(deskSeed), "Atara AI", "desk@atara.example",
+		"agent", "atara", "passkey", 221, ts(Now()))
+	return err
 }

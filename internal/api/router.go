@@ -52,6 +52,12 @@ func (h *Handler) Router() http.Handler {
 		// 浏览器直连讯飞——后端在这里只是为了让密钥不出站。
 		r.Get("/voice/iflytek-token", h.IflytekToken)
 
+		// Atara AI 对话台。消息存在 messages 表里，和人对人的会话同一张表，
+		// 所以历史照样能用 GET /threads/{peer} 读——这里单独开一条只是因为
+		// 回答要流式吐，而那个端点回的是一条完整 JSON。
+		r.Get("/desk", h.DeskInfo)
+		r.Post("/desk/messages", h.DeskMessage)
+
 		// 法币收款账户：只有自己的。OTC 的法币腿点对点走银行——账号是给对手方的，
 		// 钱不经过平台；对手方的银行信息属于那笔交易，不属于我的账户簿。
 		r.Route("/bank-accounts", func(r chi.Router) {
@@ -75,11 +81,26 @@ func (h *Handler) Router() http.Handler {
 		r.Get("/maker/application", h.MakerApplication)
 		r.Post("/maker/application", h.SubmitMakerApplication)
 
-		// 审核不算 agent 共识，所以挡在 reviewer 角色后面，系统不自动放行
-		r.Route("/admin/maker", func(r chi.Router) {
+		// 管理后台。审核不算 agent 共识，所以整组挡在 reviewer 角色后面，
+		// 系统不自动放行。概览与列表是只读运营视角，跨全体用户。
+		r.Route("/admin", func(r chi.Router) {
 			r.Use(auth.RequireRole("reviewer"))
-			r.Get("/applications", h.PendingMakerApplications)
-			r.Post("/applications/{user_id}/review", h.ReviewMakerApplication)
+			r.Route("/maker", func(r chi.Router) {
+				r.Get("/applications", h.PendingMakerApplications)
+				r.Get("/reviewed", h.ReviewedMakerApplications)
+				r.Post("/applications/{user_id}/review", h.ReviewMakerApplication)
+			})
+			// 状态看板的读模型
+			r.Get("/overview", h.AdminOverview)
+			r.Get("/orders", h.AdminOrders)
+			r.Get("/withdrawals", h.AdminWithdrawals)
+			r.Get("/offers", h.AdminOffers)
+			// 用户 / 商户
+			r.Get("/users", h.AdminUsers)
+			r.Get("/users/{id}", h.AdminUserDetail)
+			// 写动作：强制下架挂单（币留锁定）、提现复核标记
+			r.Post("/offers/{id}/delist", h.AdminForceDelist)
+			r.Post("/withdrawals/{id}/review", h.AdminReviewWithdrawal)
 		})
 
 		// 额度：不是卡，是签进链上的支配权

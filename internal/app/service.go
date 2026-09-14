@@ -17,6 +17,7 @@ import (
 	"github.com/advaita/atara-pay/internal/auth"
 	"github.com/advaita/atara-pay/internal/chain"
 	"github.com/advaita/atara-pay/internal/config"
+	"github.com/advaita/atara-pay/internal/desk"
 	"github.com/advaita/atara-pay/internal/domain/condition"
 	"github.com/advaita/atara-pay/internal/domain/model"
 	"github.com/advaita/atara-pay/internal/domain/order"
@@ -34,6 +35,10 @@ type Service struct {
 	Ch      chain.Chain
 	Cfg     config.Config
 	Confirm *auth.Confirmations
+
+	// Desk 是 Atara AI 对话台接的模型。nil 表示这台机器没配密钥——
+	// 那时对话台照常收消息，只是回一句固定话术，别的功能不受影响。
+	Desk *desk.Client
 }
 
 func New(st *store.Store, ag agent.Suite, ch chain.Chain, cfg config.Config, c *auth.Confirmations) *Service {

@@ -55,6 +55,9 @@ func addColumns(ctx context.Context, db *sql.DB) error {
 		{"orders", "fee_bps", "integer not null default 0"},
 		{"orders", "assessment", "text not null default ''"},
 		{"contacts", "status", "text not null default 'accepted'"},
+		// 后台提现复核标记：'' | suspicious | held | cleared。是运营批注，不是
+		// 资金状态，所以另起一列，不塞进 withdrawals.state 那个 check 枚举。
+		{"withdrawals", "admin_review", "text not null default ''"},
 	}
 	for _, w := range want {
 		rows, err := db.QueryContext(ctx, "select name from pragma_table_info(?)", w.table)

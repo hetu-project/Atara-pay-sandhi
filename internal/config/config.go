@@ -79,7 +79,29 @@ type Config struct {
 	// Voice 是语音听写的接入参数。没配就只是这一个功能不可用，
 	// 不影响别的——所以不在启动时炸，由接口自己报 VOICE_NOT_CONFIGURED。
 	Voice VoiceConfig
+
+	// Desk 是 Atara AI 对话台接的模型。同样，没配只关这一个功能。
+	Desk DeskConfig
 }
+
+// DeskConfig 是 Atara AI 对话台接的大模型。
+//
+// 没配 APIKey 就只是这一条会话不能聊（回一句固定话术），别的功能不受影响——
+// 所以不在启动时炸。
+//
+// 这里**不设次数上限**：按产品要求，当前阶段先不限。要加的话是在
+// app 层加一张计数表，不是在这里。注意这套部署没有访问控制、鉴权又是 mock，
+// 所以线上放开之前得先有 TLS 和访问控制，否则谁都能拿它去烧额度。
+type DeskConfig struct {
+	APIKey  string
+	BaseURL string
+	Model   string
+	// MaxTokens 限的是单次回答的长度，不是次数。没有它一次跑飞的回答
+	// 能一直吐到超时，界面上是一屏停不下来的字。
+	MaxTokens int
+}
+
+func (d DeskConfig) Configured() bool { return d.APIKey != "" }
 
 // VoiceConfig 是科大讯飞实时语音听写（IAT）的密钥。
 //
@@ -138,6 +160,12 @@ func Load() Config {
 			AppID:     env("IFLYTEK_APPID", ""),
 			APIKey:    env("IFLYTEK_API_KEY", ""),
 			APISecret: env("IFLYTEK_API_SECRET", ""),
+		},
+		Desk: DeskConfig{
+			APIKey:    env("DEEPSEEK_API_KEY", ""),
+			BaseURL:   env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+			Model:     env("DEEPSEEK_MODEL", "deepseek-chat"),
+			MaxTokens: envInt("DEEPSEEK_MAX_TOKENS", 800),
 		},
 	}
 	if c.DemoTiming {
@@ -201,4 +229,18 @@ func envBool(k string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+// envInt 读一个正整数。解析不了或非正就当没配——和 envDur 同一个分寸：
+// 这类值影响多少、不影响对错，配歪了退回默认值比拒绝启动好。
+func envInt(k string, def int) int {
+	v := os.Getenv(k)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }
