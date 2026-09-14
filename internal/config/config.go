@@ -204,7 +204,7 @@ func Load() Config {
 			APIKey:    env("DEEPSEEK_API_KEY", ""),
 			BaseURL:   env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
 			Model:     env("DEEPSEEK_MODEL", "deepseek-chat"),
-			MaxTokens: envInt("DEEPSEEK_MAX_TOKENS", 800),
+			MaxTokens: envPosInt("DEEPSEEK_MAX_TOKENS", 800),
 		},
 	}
 	if c.DemoTiming {
@@ -270,6 +270,10 @@ func envBool(k string, def bool) bool {
 	return b
 }
 
+// envInt 读一个整数。任何整数都收，包括 0 和负数。
+//
+// 给「0 本身就是一个合法取值」的字段用——比如 IDANALYZER_MODE，
+// 0 是证件+人脸，还正好是默认值。这种字段不能拿 0 当「没配」。
 func envInt(k string, def int) int {
 	v := os.Getenv(k)
 	if v == "" {
@@ -280,4 +284,19 @@ func envInt(k string, def int) int {
 		return def
 	}
 	return n
+}
+
+// envPosInt 读一个正整数。0、负数、解析不了，一律当没配。
+//
+// 给「0 没有意义」的字段用——比如 DEEPSEEK_MAX_TOKENS：配成 0 会被原样传给
+// 上游，每次回答都截成空，而界面上只会看到 AI 一句话不说。这种字段宁可
+// 退回默认值，也不能把一个说不通的数发出去。
+//
+// 和 envInt 分开是有意的：这两条规则对同一个函数是矛盾的，合成一个就必然
+// 有一边是错的。名字里写清楚，调用处才不会挑错。
+func envPosInt(k string, def int) int {
+	if n := envInt(k, def); n > 0 {
+		return n
+	}
+	return def
 }
