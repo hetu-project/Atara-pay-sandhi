@@ -21,7 +21,7 @@ atara.db-shm
 *.db-shm
 
 # 密钥与本地配置
-.env
+# .env
 .env.*
 !.env.example
 
