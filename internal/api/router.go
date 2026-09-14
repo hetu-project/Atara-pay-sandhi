@@ -48,6 +48,10 @@ func (h *Handler) Router() http.Handler {
 		r.Post("/uploads", h.Upload)
 		r.Get("/uploads/*", h.ServeUpload)
 
+		// 语音听写：只签一枚讯飞的鉴权 WSS URL。音频不过我们这一跳，
+		// 浏览器直连讯飞——后端在这里只是为了让密钥不出站。
+		r.Get("/voice/iflytek-token", h.IflytekToken)
+
 		// 法币收款账户：只有自己的。OTC 的法币腿点对点走银行——账号是给对手方的，
 		// 钱不经过平台；对手方的银行信息属于那笔交易，不属于我的账户簿。
 		r.Route("/bank-accounts", func(r chi.Router) {

@@ -75,6 +75,25 @@ type Config struct {
 	// 配错链参数比不配更危险，不能让它悄悄退回 mock 继续跑。
 	ChainImpl string
 	Chain     ChainConfig
+
+	// Voice 是语音听写的接入参数。没配就只是这一个功能不可用，
+	// 不影响别的——所以不在启动时炸，由接口自己报 VOICE_NOT_CONFIGURED。
+	Voice VoiceConfig
+}
+
+// VoiceConfig 是科大讯飞实时语音听写（IAT）的密钥。
+//
+// APIKey / APISecret 绝不下发到浏览器：前端只拿后端签好的、带时效的 WSS URL。
+// 密钥一旦进了 JS 产物就是公开文件，任何人都能拿去刷我们的讯飞额度。
+type VoiceConfig struct {
+	AppID     string
+	APIKey    string
+	APISecret string
+}
+
+// Configured 说这套密钥齐不齐。三个缺一个都签不出 URL。
+func (v VoiceConfig) Configured() bool {
+	return v.AppID != "" && v.APIKey != "" && v.APISecret != ""
 }
 
 // ChainConfig 是真实链的接入参数。
@@ -93,6 +112,8 @@ type ChainConfig struct {
 }
 
 func Load() Config {
+	// 先把 .env 读进环境，再逐个取。命令行上显式给的值不会被文件盖掉。
+	loadDotenv()
 	c := Config{
 		Addr:        env("ATARA_HTTP_ADDR", ":8080"),
 		DBPath:      env("ATARA_DB_PATH", "./atara.db"),
@@ -112,6 +133,11 @@ func Load() Config {
 			USDC:         env("ATARA_TOKEN_USDC", ""),
 			Network:      env("ATARA_NETWORK", "BSC-TESTNET"),
 			ExplorerBase: env("ATARA_EXPLORER", "https://testnet.bscscan.com"),
+		},
+		Voice: VoiceConfig{
+			AppID:     env("IFLYTEK_APPID", ""),
+			APIKey:    env("IFLYTEK_API_KEY", ""),
+			APISecret: env("IFLYTEK_API_SECRET", ""),
 		},
 	}
 	if c.DemoTiming {

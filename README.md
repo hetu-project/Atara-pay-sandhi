@@ -55,9 +55,13 @@ call reverted。**
 
 `ATARA_TOKEN_USDT` / `ATARA_TOKEN_USDC` 填了就用现成的，留空就新部一个测试币。
 
-**`run` / `fresh` 不读 `.env`，`run-chain` / `fresh-chain` 才读。** 这是故意的：
-前两个是演示用的 mock 链，读了 `.env` 就会去连真链，RPC 一不通后端直接起不来，
-而人往往只是想开个演示。
+**后端启动时自己会读 `.env`**，密钥和本地参数写在那里每个目标都生效；
+命令行上显式给的值优先，不会被文件盖掉。`run-chain` / `fresh-chain` 多做的
+一件事是把 `.env` 导出成环境变量再起——链参数要在 `go run` 之前就进环境。
+
+**所以保持 mock 链靠的是 `.env` 里不写链参数**：不配 `ATARA_CHAIN_IMPL`
+就是 mock，RPC 通不通都能起来。反过来，链参数一旦填进 `.env`，普通启动
+也会去连真链——只是想开个演示的时候，后端会直接起不来。
 
 合约地址存在库里（`chain_deployments` + `chain_tokens`），由
 `GET /api/v1/catalog/chain` 发下去：

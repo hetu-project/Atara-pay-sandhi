@@ -38,9 +38,12 @@ serve:          ## 起前后端（FRESH=1 先清库，CHAIN=mock 不连真链）
 run:            ## 起服务（保留现有数据，mock 链）
 	$(ENV) go run ./cmd/atara-pay
 
-# .env 只有这两个目标会读。run / fresh 不读是故意的：那两个是演示用的
-# mock 链，读了 .env 就会连真链，RPC 一不通后端直接起不来——
-# 而人只是想开个演示。要连链就明说，走这两个目标。
+# 后端启动时自己会读 .env（config.loadDotenv），密钥和本地参数写在那里
+# 每个目标都生效。下面这两个多做的一件事是把 .env **导出成环境变量**再起：
+# 链参数要在 go run 之前就进环境。
+#
+# 保持 mock 链的办法不再是「不读 .env」，而是 .env 里不写链参数——
+# 不配 ATARA_CHAIN_IMPL 就是 mock，RPC 通不通都能起来。
 run-chain:      ## 起服务，连 .env 里配的真链（保留现有数据）
 	set -a && . ./.env && set +a && $(ENV) go run ./cmd/atara-pay
 
