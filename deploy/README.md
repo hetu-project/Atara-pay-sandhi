@@ -157,6 +157,34 @@ certbot --nginx --ip-address 62.146.236.64 --preferred-profile shortlived
   同一个 Google 账号会落到另一个账户上。演示数据无所谓，但别在 HTTP 和
   HTTPS 两种模式之间来回切着演示同一条链路
 
+### 身份核验（ID Analyzer / DocuPass）
+
+证件拍照、活体检测跑在 ID Analyzer 的托管页面里，影像不经过我们这台机器。
+浏览器只拿一枚短效、单次有效的 `reference`；API key 留在后端。
+
+1. 在 [ID Analyzer 门户](https://portal.idanalyzer.com) 拿一把 API key
+2. `Profile > General` 里把 webhook URL 填成 `https://你的域名/webhooks/idanalyzer`
+3. `API Keys → Webhook Signing Secret` 复制那串密钥
+4. 写进 systemd 单元的 `Environment=`：
+
+```
+IDANALYZER_API_KEY=...
+IDANALYZER_PROFILE=...            # 门户里那个配置档 ID，或 security_medium
+IDANALYZER_WEBHOOK_SECRET=...
+```
+
+**没配 webhook 也能用。** 后端在前端每次查状态时会拿自己的 key 去
+`GET /docupass/{reference}` 拉一次——本地开发和用内置预设（`security_medium`
+那几个）时根本收不到回调，只等回调的话状态会永远停在「核验中」。
+回调到了就是白拉一次，没到也不耽误。
+
+**`IDANALYZER_WEBHOOK_SECRET` 不配就拒收所有回调。** 这是有意的：
+「没配置」和「验过了」是两件事，混成一件等于 `/webhooks/idanalyzer`
+谁都能打，而它改的是放不放行一个账户去收别人的法币。
+
+一个字都不配也能起来——`/api/v1/kyc/session` 返回 `KYC_NOT_CONFIGURED`，
+界面上照实说这台机器没开身份核验，别的功能不受影响。
+
 ## 四、选链
 
 这次上线选的是 **`mock`**（单元里 `ATARA_CHAIN_IMPL=mock` 已经写死）。

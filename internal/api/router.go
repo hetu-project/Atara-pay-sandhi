@@ -20,6 +20,10 @@ func (h *Handler) Router() http.Handler {
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// ID Analyzer 的回调。挂在 /api/v1 外面是有意的：打进来的是 ID Analyzer，
+	// 不是某个登录用户，它没有也不该有我们的身份头。它的身份由 HMAC 签名证明。
+	r.Post("/webhooks/idanalyzer", h.IDAnalyzerWebhook)
+
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(store.DemoHandle, h.St.UserByHandle))
 
@@ -76,6 +80,11 @@ func (h *Handler) Router() http.Handler {
 		r.Get("/withdrawals", h.Withdrawals)
 		r.Post("/withdrawals", h.CreateWithdrawal)
 		r.Post("/withdrawals/{id}/broadcast", h.BroadcastWithdrawal)
+
+		// 身份核验：托管的 DocuPass 流程。前端只拿短效 reference，
+		// 结论由 webhook 或服务端拉取落定——浏览器说的不算。
+		r.Post("/kyc/session", h.StartKyc)
+		r.Get("/kyc/status", h.KycStatus)
 
 		// Maker 申请：两段提交，审核是真人动作
 		r.Get("/maker/application", h.MakerApplication)

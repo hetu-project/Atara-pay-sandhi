@@ -307,6 +307,41 @@ create table if not exists maker_applications (
   updated_at    text not null
 );
 
+-- 身份核验。一次 DocuPass 会话一行，以 reference 为主键。
+--
+-- 为什么不是一个用户一行：一个人可能核好几次（第一次证件糊了、链接过期、
+-- 被判 review 后重新走一遍）。只留最后一次的话，"他什么时候通过的、当时
+-- 那次为什么被拒" 这类问题就没有答案了，而这正是合规上要留痕的东西。
+--
+-- raw_json 是 ID Analyzer 回来的整份原文。只存我们解析出的字段是不够的：
+-- 出纠纷时要查的是它当时到底说了什么，不是我们当时读懂了什么。
+create table if not exists kyc_verifications (
+  reference      text primary key,
+  user_id        text not null references users(id),
+  -- pending：会话建好了，人还没走完 / 结果还没回来
+  status         text not null default 'pending'
+                 check (status in ('pending','accept','review','reject')),
+  transaction_id text not null default '',
+  docupass_id    text not null default '',
+  profile_id     text not null default '',
+  review_score   integer not null default 0,
+  reject_score   integer not null default 0,
+  -- 最后一次落库的事件名。和 transaction_id 一起用来去重：
+  -- 回调会重投（失败重试 4 次，门户里还能手动重发 48 小时）。
+  last_event     text not null default '',
+  identity_json  text not null default '{}',
+  warnings_json  text not null default '[]',
+  raw_json       text not null default '',
+  -- 结论是从哪条路来的：webhook 还是我们自己拉的。查"为什么没更新"时，
+  -- 先要分清是回调没到，还是拉取没跑。
+  source         text not null default '',
+  created_at     text not null,
+  updated_at     text not null,
+  concluded_at   text
+);
+create index if not exists idx_kyc_user on kyc_verifications(user_id, created_at desc);
+create index if not exists idx_kyc_txn on kyc_verifications(transaction_id);
+
 -- 支付确认令牌。原先是进程内的 map，重启即丢；落库后重启不影响未过期的令牌。
 create table if not exists confirmations (
   token       text primary key,

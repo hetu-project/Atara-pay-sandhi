@@ -80,28 +80,46 @@ type Config struct {
 	// 不影响别的——所以不在启动时炸，由接口自己报 VOICE_NOT_CONFIGURED。
 	Voice VoiceConfig
 
-	// Desk 是 Atara AI 对话台接的模型。同样，没配只关这一个功能。
-	Desk DeskConfig
+	// KYC 是 ID Analyzer / DocuPass 的接入参数。同样不在启动时炸：
+	// 没配就只是身份核验这一件事不可用。
+	KYC KYCConfig
 }
 
-// DeskConfig 是 Atara AI 对话台接的大模型。
+// KYCConfig 是 ID Analyzer（DocuPass）的接入参数。
 //
-// 没配 APIKey 就只是这一条会话不能聊（回一句固定话术），别的功能不受影响——
-// 所以不在启动时炸。
-//
-// 这里**不设次数上限**：按产品要求，当前阶段先不限。要加的话是在
-// app 层加一张计数表，不是在这里。注意这套部署没有访问控制、鉴权又是 mock，
-// 所以线上放开之前得先有 TLS 和访问控制，否则谁都能拿它去烧额度。
-type DeskConfig struct {
-	APIKey  string
-	BaseURL string
-	Model   string
-	// MaxTokens 限的是单次回答的长度，不是次数。没有它一次跑飞的回答
-	// 能一直吐到超时，界面上是一屏停不下来的字。
-	MaxTokens int
+// APIKey 绝不下发到浏览器——ID Analyzer 自己的文档把这条写成硬规矩：
+// 应用只应持有短效的 reference，绝不可直接调 POST /docupass 或
+// GET /docupass/{reference}。拿到这把 key 就能替我们建会话、读任何一次
+// 核验的完整人像和证件号。
+type KYCConfig struct {
+	APIKey string
+	// Profile 是门户里建的 KYC 配置档 ID。也可以直接用内置预设
+	// security_high / security_medium / security_low / security_none——
+	// 不用先去门户建档就能跑通，代价是没有 webhook（webhook URL 配在档上）。
+	Profile string
+	// Region: us | eu。个人信息只存放在提交去的那一侧，不跨区同步。
+	Region string
+	// WebhookSecret 是门户里 API Keys → Webhook Signing Secret 那一条。
+	// 没配就拒收所有回调——「没配置」和「验过了」是两件事，
+	// 混成一件等于这个接口谁都能打。
+	WebhookSecret string
+	// Mode 决定让用户做什么：0 证件+人脸，1 只证件，2 只人脸，3 只签署。
+	// 默认 0：OTC 的法币腿要认人，只读证件不做人脸等于没认。
+	Mode int
+	// Language 是托管页面的界面语言。空表示让 DocuPass 按浏览器语言自己挑。
+	//
+	// 默认 en：不定的话，一台中文系统打开的是中文界面，而这个控制台整体是
+	// 英文的——同一个弹窗里外两种语言。语言该跟着产品走，不跟着操作系统走。
+	//
+	// 取值是 DocuPass 自己那套键，不是 BCP-47：英文 en，简中 cn，繁中 tw，
+	// 日文 ja……（完整列表见 v.idanalyzer.com/asset/language.json）。
+	// 写成 zh-CN 是认不出来的，那会悄悄退回按浏览器猜。
+	Language string
 }
 
-func (d DeskConfig) Configured() bool { return d.APIKey != "" }
+// Configured 说这套参数齐不齐。没有 key 就什么都做不了；
+// Profile 可以是内置预设，所以也必须有一个值。
+func (k KYCConfig) Configured() bool { return k.APIKey != "" && k.Profile != "" }
 
 // VoiceConfig 是科大讯飞实时语音听写（IAT）的密钥。
 //
@@ -160,6 +178,14 @@ func Load() Config {
 			AppID:     env("IFLYTEK_APPID", ""),
 			APIKey:    env("IFLYTEK_API_KEY", ""),
 			APISecret: env("IFLYTEK_API_SECRET", ""),
+		},
+		KYC: KYCConfig{
+			APIKey:        env("IDANALYZER_API_KEY", ""),
+			Profile:       env("IDANALYZER_PROFILE", "security_medium"),
+			Region:        env("IDANALYZER_REGION", "us"),
+			WebhookSecret: env("IDANALYZER_WEBHOOK_SECRET", ""),
+			Mode:          envInt("IDANALYZER_MODE", 0),
+			Language:      env("IDANALYZER_LANGUAGE", "en"),
 		},
 		Desk: DeskConfig{
 			APIKey:    env("DEEPSEEK_API_KEY", ""),
@@ -231,15 +257,13 @@ func envBool(k string, def bool) bool {
 	return b
 }
 
-// envInt 读一个正整数。解析不了或非正就当没配——和 envDur 同一个分寸：
-// 这类值影响多少、不影响对错，配歪了退回默认值比拒绝启动好。
 func envInt(k string, def int) int {
 	v := os.Getenv(k)
 	if v == "" {
 		return def
 	}
 	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
+	if err != nil {
 		return def
 	}
 	return n
