@@ -26,7 +26,7 @@ func TestStageTellsSubmittedFromRejected(t *testing.T) {
 func TestSnapshotCarriesTheNumbers(t *testing.T) {
 	s := Snapshot{
 		Name: "Demo", Address: "0xabc", WalletKind: "atara",
-		KycDone: true, KycOK: true, ListingDone: true, Approved: false,
+		IDState: "accept", KycOK: true, ListingDone: true, Approved: false,
 		TotalUSD: "34500", EscrowUSD: "1200",
 		Balances: []Balance{{Asset: "USDT", Network: "BSC", OnChain: "34500", InEscrow: "0", USD: "34500"}},
 		Orders: []OrderLine{{Ref: "ATR-8F42C1", Amount: "5000", Asset: "USDT",
@@ -41,7 +41,7 @@ func TestSnapshotCarriesTheNumbers(t *testing.T) {
 		"ATR-8F42C1", "Golden Gate", "Send the transfer", "waiting on you", "3 minutes ago",
 		"agent-x",
 		"submitted, under review", // listing 交了没过
-		"approved",                // kyc 过了
+		"passed",                  // 身份核验过了
 		"cannot post listings",
 	} {
 		if !strings.Contains(txt, want) {
@@ -103,5 +103,73 @@ func TestSystemPromptKeepsTheHardRules(t *testing.T) {
 		if !strings.Contains(strings.ToLower(system), strings.ToLower(want)) {
 			t.Errorf("系统提示里丢了 %q 这条规矩", want)
 		}
+	}
+}
+
+// 身份核验的五种状态必须各说各的。
+//
+// 这条测试盯的是一次真实的漂移：快照原来读 maker_applications 那两个布尔，
+// 而它们只在 accept 时才被写。于是 pending / review / reject 三种状态在模型
+// 眼里都是「还没提交」——人刚拍完证件做完活体、正卡在人工复核，问一句
+// 「我的核验怎么样了」，得到的是「你还没提交身份验证」。
+func TestIdPhraseSeparatesAllFiveStates(t *testing.T) {
+	seen := map[string]string{}
+	for _, st := range []string{"none", "pending", "accept", "review", "reject"} {
+		got := idPhrase(st)
+		if got == "" {
+			t.Fatalf("%q 没有说法", st)
+		}
+		if prev, dup := seen[got]; dup {
+			t.Errorf("%q 和 %q 说的是同一句话：%q", st, prev, got)
+		}
+		seen[got] = st
+	}
+	/* 三种「不是通过、也不是没开始」的状态，一个都不能被说成没提交。 */
+	for _, st := range []string{"pending", "review", "reject"} {
+		if strings.Contains(strings.ToLower(idPhrase(st)), "not started") {
+			t.Errorf("%q 被说成了「没开始」", st)
+		}
+	}
+	/* 认不出来的状态退回「没开始」，不能是空字符串——空的会让模型自己编。 */
+	if idPhrase("something-new") != idPhrase("none") {
+		t.Error("没见过的状态该退回「没开始」")
+	}
+}
+
+// review 的措辞要说清「没你的事了，等着就行」。
+// 说成「还有一步要做」的话，人会一遍遍重开核验，而每重开一次就是一次上游计费。
+func TestReviewSaysThereIsNothingToDo(t *testing.T) {
+	p := strings.ToLower(idPhrase("review"))
+	if !strings.Contains(p, "wait") {
+		t.Errorf("review 没说清要等：%q", p)
+	}
+	if !strings.Contains(p, "read") {
+		t.Errorf("review 没说清文件已经读过了：%q", p)
+	}
+}
+
+// 没通过时得说出哪几项没过，并且要说清「还不能下单」。
+func TestSnapshotCarriesRejectReasons(t *testing.T) {
+	txt := Snapshot{
+		Name: "D", WalletKind: "atara", IDState: "reject", KycOK: false,
+		IDWarnings: []string{"Face does not match the document photo", "Document expired"},
+	}.Text()
+	for _, want := range []string{
+		"did not pass",
+		"Face does not match the document photo",
+		"Document expired",
+		"cannot place orders",
+	} {
+		if !strings.Contains(txt, want) {
+			t.Errorf("快照里少了 %q\n%s", want, txt)
+		}
+	}
+}
+
+// 通过之后不该再挂着「不能下单」那句。
+func TestSnapshotDropsTheBlockOnceVerified(t *testing.T) {
+	txt := Snapshot{Name: "D", WalletKind: "atara", IDState: "accept", KycOK: true}.Text()
+	if strings.Contains(txt, "cannot place orders") {
+		t.Errorf("已经验过了还说不能下单\n%s", txt)
 	}
 }

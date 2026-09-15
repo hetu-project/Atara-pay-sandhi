@@ -57,11 +57,12 @@ func (h *Handler) ReviewMakerApplication(w http.ResponseWriter, r *http.Request)
 		httpx.Error(w, err)
 		return
 	}
-	a, err := h.Svc.ReviewMakerApplication(r.Context(), h.actorID(r),
-		chi.URLParam(r, "user_id"), req)
+	userID := chi.URLParam(r, "user_id")
+	a, err := h.Svc.ReviewMakerApplication(r.Context(), h.actorID(r), userID, req)
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
+	h.audit(r, "maker.review", "application", userID, req.Stage+":"+req.Decision)
 	ok(w, a)
 }

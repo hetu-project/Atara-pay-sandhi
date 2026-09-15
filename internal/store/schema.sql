@@ -378,3 +378,16 @@ create table if not exists chain_tokens (
   decimals integer not null default 0,
   primary key (network, asset)
 );
+
+-- 后台操作审计。append-only：每次 admin 写动作记一行，事后可查「谁在何时干了什么」。
+-- 不改任何业务表，只是旁路留痕。actor_id 是执行动作的账户（真鉴权前是 reviewer）。
+create table if not exists admin_audit (
+  id          integer primary key autoincrement,
+  actor_id    text not null,
+  action      text not null,            -- maker.review | offer.delist | withdrawal.review | user.ban | user.unban | user.revoke_maker
+  target_type text not null default '', -- application | offer | withdrawal | user
+  target_id   text not null default '',
+  detail      text not null default '', -- JSON 或一句话，随动作而定
+  created_at  text not null
+);
+create index if not exists idx_admin_audit_time on admin_audit(created_at desc);

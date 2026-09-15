@@ -27,9 +27,16 @@ const (
 
 type Lookup func(ctx context.Context, handle string) (*model.User, error)
 
+// BannedCheck 说这个账户有没有被后台封禁。放在这里而不是塞进 model.User，
+// 是为了不动 userCols（它同时被 select 和 insert 用，加列会连带改插入占位）。
+type BannedCheck func(ctx context.Context, userID string) bool
+
 // Middleware 把 actor 放进请求上下文。没带头就落到 demo 用户，
 // 因为一期不做注册，前端也没有登录页。
-func Middleware(defaultHandle string, lookup Lookup) func(http.Handler) http.Handler {
+//
+// isBanned 可为 nil（比如测试里不关心封禁）；非 nil 时被封的账户一律 403，
+// 后台的封禁动作就是靠这一层生效的。
+func Middleware(defaultHandle string, lookup Lookup, isBanned BannedCheck) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			handle := r.Header.Get(HeaderUser)
@@ -39,6 +46,11 @@ func Middleware(defaultHandle string, lookup Lookup) func(http.Handler) http.Han
 			u, err := lookup(r.Context(), handle)
 			if err != nil {
 				httpx.Error(w, httpx.Fail(http.StatusUnauthorized, "UNKNOWN_ACTOR", "", "no such user: "+handle))
+				return
+			}
+			if isBanned != nil && isBanned(r.Context(), u.ID) {
+				httpx.Error(w, httpx.Fail(http.StatusForbidden, "ACCOUNT_BANNED", "",
+					"this account has been suspended"))
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, u)))

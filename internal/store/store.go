@@ -58,6 +58,8 @@ func addColumns(ctx context.Context, db *sql.DB) error {
 		// 后台提现复核标记：'' | suspicious | held | cleared。是运营批注，不是
 		// 资金状态，所以另起一列，不塞进 withdrawals.state 那个 check 枚举。
 		{"withdrawals", "admin_review", "text not null default ''"},
+		// 封禁标记。被封的账户在 auth 中间层直接挡下（见 auth.Middleware）。
+		{"users", "banned", "integer not null default 0"},
 	}
 	for _, w := range want {
 		rows, err := db.QueryContext(ctx, "select name from pragma_table_info(?)", w.table)

@@ -14,8 +14,18 @@ type Snapshot struct {
 	Address    string
 	WalletKind string
 
-	KycDone     bool
-	KycOK       bool
+	/* 身份核验：none | pending | accept | review | reject。
+	   这是 ID Analyzer 那条流程的状态，两个布尔表达不了——「开了没做完」和
+	   「从没开过」是两句不同的话，而「转人工复核」既不是通过也不是没交。 */
+	IDState string
+	/* 没通过时哪几项没过。后端有这份数据，不带上来模型只能说「请联系审核员」，
+	   而人问的恰恰是「为什么没过」。 */
+	IDWarnings []string
+	/* 能不能下单。看的是历史上有没有通过过，不是最近这一次——一个验过的人
+	   又开了一次新会话时，他的身份不该在那一刻变回未验证。 */
+	KycOK bool
+
+	/* 挂单条款是另一段审核，仍然是两个布尔。 */
 	ListingDone bool
 	Approved    bool
 	ReviewNote  string
@@ -88,7 +98,13 @@ func (s Snapshot) Text() string {
 		map[string]string{"atara": "Atara self-custody wallet", "ext": "external wallet"}[s.WalletKind])
 
 	b.WriteString("\n## Onboarding\n")
-	fmt.Fprintf(&b, "Identity verification: %s\n", stage(s.KycDone, s.KycOK))
+	fmt.Fprintf(&b, "Identity verification: %s\n", idPhrase(s.IDState))
+	for _, w := range s.IDWarnings {
+		fmt.Fprintf(&b, "- did not clear: %s\n", w)
+	}
+	if !s.KycOK {
+		b.WriteString("They cannot place orders until identity verification passes.\n")
+	}
 	fmt.Fprintf(&b, "Trading terms: %s\n", stage(s.ListingDone, s.Approved))
 	if s.Approved {
 		b.WriteString("They can post listings.\n")
@@ -149,6 +165,28 @@ func (s Snapshot) Text() string {
 	}
 
 	return b.String()
+}
+
+// idPhrase 把身份核验的五种状态翻成一句人话。
+//
+// 五种必须分开说：把 pending / review / reject 都归成「还没验」，人问
+// 「我的核验怎么样了」时会得到「你还没提交」——而他明明刚拍完证件做完活体。
+// review 那条尤其不能含糊：文件已经读过了，卡在等人看一眼，不是他还有事没做。
+func idPhrase(state string) string {
+	switch state {
+	case "accept":
+		return "passed"
+	case "pending":
+		return "started but not finished — the verification window was opened and never " +
+			"completed; they can reopen it from the onboarding step"
+	case "review":
+		return "documents were read, but at least one check needs a person to look at it; " +
+			"nothing for them to do but wait"
+	case "reject":
+		return "did not pass — they can try again with a different document"
+	default:
+		return "not started"
+	}
 }
 
 // stage 把「交了没」「过了没」两个布尔翻成一句人话。

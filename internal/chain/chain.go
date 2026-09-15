@@ -145,6 +145,19 @@ type Chain interface {
 	// 它存在的意义是让**链上策略成为额度校验的权威**：只有平台库记着的
 	// 额度是装饰，链上撤了平台还放行就是假的非托管。
 	AllowanceState(ctx context.Context, allowanceID string) (*AllowanceState, error)
+
+	// VerifyTx 按哈希去链上核一笔交易的真伪与状态。给后台的提现复核用：
+	// 提现是用户自己签发广播的，平台只收到一个 tx_hash，不核就等于听用户
+	// 一面之词。mock 链的哈希是合成的、核验不了，返回 Supported=false。
+	VerifyTx(ctx context.Context, txHash string) (*TxVerification, error)
+}
+
+// TxVerification 是一笔链上交易的核验结果。
+type TxVerification struct {
+	Supported     bool  `json:"supported"`     // 这条链能否核验（mock 不能）
+	Found         bool  `json:"found"`         // 链上是否存在这笔交易
+	Success       bool  `json:"success"`       // 是否执行成功（receipt.status==1）
+	Confirmations int64 `json:"confirmations"` // 已确认区块数
 }
 
 // OfferKey 把挂单号换成合约里的 bytes32。

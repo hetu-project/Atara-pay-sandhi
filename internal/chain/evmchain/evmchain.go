@@ -964,3 +964,25 @@ func idHash(id string) [32]byte {
 }
 
 var _ chain.Chain = (*Chain)(nil)
+
+// VerifyTx 去链上查这笔交易的回执，核验真伪与成功状态。
+// 查不到回执（还没打包或哈希是伪造的）返回 Found=false。
+func (c *Chain) VerifyTx(ctx context.Context, txHash string) (*chain.TxVerification, error) {
+	out := &chain.TxVerification{Supported: true}
+	rcpt, err := c.cli.TransactionReceipt(ctx, common.HexToHash(txHash))
+	if err != nil {
+		// 最常见是 ethereum.NotFound：链上没有这笔交易。这不是错误，是核验结论。
+		if errors.Is(err, ethereum.NotFound) {
+			return out, nil
+		}
+		return nil, err
+	}
+	out.Found = true
+	out.Success = rcpt.Status == 1
+	if head, err := c.cli.BlockNumber(ctx); err == nil && rcpt.BlockNumber != nil {
+		if n := int64(head) - rcpt.BlockNumber.Int64() + 1; n > 0 {
+			out.Confirmations = n
+		}
+	}
+	return out, nil
+}

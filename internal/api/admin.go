@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 
@@ -41,6 +42,19 @@ func (h *Handler) AdminWithdrawals(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"withdrawals": rows})
 }
 
+func (h *Handler) AdminTrends(w http.ResponseWriter, r *http.Request) {
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	if days == 0 {
+		days = 30
+	}
+	pts, err := h.St.AdminTrends(r.Context(), days)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, map[string]any{"points": pts})
+}
+
 func (h *Handler) AdminOffers(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.St.AdminOffers(r.Context(), limitParam(r))
 	if err != nil {
@@ -72,11 +86,13 @@ func (h *Handler) AdminUserDetail(w http.ResponseWriter, r *http.Request) {
 
 // AdminForceDelist 强制下架挂单。币留锁定（见 store 说明）。
 func (h *Handler) AdminForceDelist(w http.ResponseWriter, r *http.Request) {
-	if err := h.St.AdminForceDelist(r.Context(), chi.URLParam(r, "id")); err != nil {
+	id := chi.URLParam(r, "id")
+	if err := h.St.AdminForceDelist(r.Context(), id); err != nil {
 		httpx.Error(w, httpx.Fail(http.StatusConflict, "DELIST_FAILED", "",
 			"挂单不存在，或已不是 active 状态"))
 		return
 	}
+	h.audit(r, "offer.delist", "offer", id, "")
 	ok(w, map[string]any{"ok": true})
 }
 
@@ -94,11 +110,110 @@ func (h *Handler) AdminReviewWithdrawal(w http.ResponseWriter, r *http.Request) 
 			"flag must be one of: suspicious, held, cleared, or empty to clear"))
 		return
 	}
-	if err := h.St.AdminSetWithdrawalReview(r.Context(), chi.URLParam(r, "id"), req.Flag); err != nil {
+	id := chi.URLParam(r, "id")
+	if err := h.St.AdminSetWithdrawalReview(r.Context(), id, req.Flag); err != nil {
 		httpx.Error(w, httpx.NotFound("withdrawal"))
 		return
 	}
+	h.audit(r, "withdrawal.review", "withdrawal", id, req.Flag)
 	ok(w, map[string]any{"ok": true})
+}
+
+// AdminVerifyWithdrawal 拿提现的 tx_hash 去链上核验真伪，并据结果打复核标记。
+// mock 链无法核验（哈希是合成的），返回 supported=false、不改标记。
+func (h *Handler) AdminVerifyWithdrawal(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	tx, exists := h.St.AdminWithdrawalTx(r.Context(), id)
+	if !exists {
+		httpx.Error(w, httpx.NotFound("withdrawal"))
+		return
+	}
+	if tx == "" {
+		httpx.Error(w, httpx.Fail(http.StatusUnprocessableEntity, "NO_TX", "",
+			"这笔提现还没有交易哈希，无从核验"))
+		return
+	}
+	v, err := h.Svc.Ch.VerifyTx(r.Context(), tx)
+	if err != nil {
+		httpx.Error(w, httpx.Fail(http.StatusBadGateway, "CHAIN_ERROR", "", "链上查询失败："+err.Error()))
+		return
+	}
+	if !v.Supported {
+		// 不改标记，如实告诉前端这条链核不了。
+		ok(w, map[string]any{"verification": v, "message": "当前链无法核验（mock 链的哈希是合成的）"})
+		return
+	}
+	flag := "suspicious"
+	detail := "链上未找到该交易"
+	if v.Found && v.Success {
+		flag = "cleared"
+		detail = "链上核实成功"
+	} else if v.Found {
+		detail = "交易存在但执行失败"
+	}
+	if err := h.St.AdminSetWithdrawalReview(r.Context(), id, flag); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	h.audit(r, "withdrawal.verify", "withdrawal", id, detail)
+	ok(w, map[string]any{"verification": v, "flag": flag, "message": detail})
+}
+
+// AdminAudit 是操作审计列表（最近在前）。只读。
+func (h *Handler) AdminAudit(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.St.AdminAudit(r.Context(), limitParam(r))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, map[string]any{"entries": rows})
+}
+
+// AdminBanUser 封禁/解封账户。body: {"banned": true|false}。
+func (h *Handler) AdminBanUser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Banned bool `json:"banned"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	// 不许封自己——否则一手把自己锁在门外，连解封都做不了。
+	if id == h.actorID(r) {
+		httpx.Error(w, httpx.Fail(http.StatusConflict, "CANNOT_BAN_SELF", "", "你不能封禁自己"))
+		return
+	}
+	if err := h.St.AdminSetUserBanned(r.Context(), id, req.Banned); err != nil {
+		httpx.Error(w, httpx.NotFound("user"))
+		return
+	}
+	action := "user.ban"
+	if !req.Banned {
+		action = "user.unban"
+	}
+	h.audit(r, action, "user", id, "")
+	ok(w, map[string]any{"ok": true})
+}
+
+// AdminRevokeMaker 撤销做市资格（approved→0）。已挂出的单要另走强制下架。
+func (h *Handler) AdminRevokeMaker(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := h.St.AdminRevokeMaker(r.Context(), id); err != nil {
+		httpx.Error(w, httpx.Fail(http.StatusConflict, "REVOKE_FAILED", "",
+			"该账户没有已过审的做市资格"))
+		return
+	}
+	h.audit(r, "user.revoke_maker", "user", id, "")
+	ok(w, map[string]any{"ok": true})
+}
+
+// audit 记一条后台操作。失败只记日志、不影响已成功的动作——审计缺一条比
+// 让业务动作回滚轻。
+func (h *Handler) audit(r *http.Request, action, targetType, targetID, detail string) {
+	if err := h.St.LogAudit(r.Context(), h.actorID(r), action, targetType, targetID, detail); err != nil {
+		log.Printf("admin audit: %s %s/%s: %v", action, targetType, targetID, err)
+	}
 }
 
 // limitParam 读 ?limit=，非法或缺省交给 store 层兜底（那里有上限保护）。

@@ -474,3 +474,8 @@ func (c *Chain) AllowanceState(ctx context.Context, allowanceID string) (*chain.
 	}
 	return st, nil
 }
+
+// VerifyTx：mock 链的哈希是合成的，核验不了真伪。诚实返回不支持。
+func (c *Chain) VerifyTx(_ context.Context, _ string) (*chain.TxVerification, error) {
+	return &chain.TxVerification{Supported: false}, nil
+}

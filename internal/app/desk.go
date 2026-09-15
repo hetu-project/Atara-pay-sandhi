@@ -128,11 +128,28 @@ func (s *Service) deskSnapshot(ctx context.Context, ownerID string) (desk.Snapsh
 
 	// ── 准入 ──
 	if app, err := s.St.MakerApp(ctx, ownerID); err == nil && app != nil {
-		snap.KycDone, snap.KycOK = app.KYCDone, app.KYCOk
 		snap.ListingDone, snap.Approved = app.ListingDone, app.Approved
 		/* 被拒的理由要带上：人问「为什么没过」的时候，这是唯一能回答的依据。
 		   没有它模型只会说「请联系审核员」。 */
 		snap.ReviewNote = app.RejectReason
+	}
+
+	/* 身份核验读 KYC 那条流程本身，不读 maker_applications 的两个布尔。
+	   那两个布尔只在 accept 时才被写（MarkKycOk），所以 pending / review /
+	   reject 三种状态在它们眼里都是「没交」——人刚做完全套证件和活体、正卡在
+	   人工复核，问一句「我的核验怎么样了」会被告知「你还没提交」。
+
+	   refresh=false：只读库，不去打上游。这是每问一句话都会走的路径，
+	   而前端本来就在轮询那个接口，结论迟早会落库。 */
+	if k, err := s.KycStatusFor(ctx, ownerID, false); err == nil && k != nil {
+		snap.IDState, snap.KycOK = k.State, k.KycOk
+		for _, w := range k.Warnings {
+			/* 只带描述，不带 code 和置信度——那两个是给我们排查用的，
+			   念给用户听只会让他以为自己该去查一个错误码。 */
+			if w.Description != "" {
+				snap.IDWarnings = append(snap.IDWarnings, w.Description)
+			}
+		}
 	}
 
 	// ── 余额 ── 与 /wallet 同源：链上余额 + 托管里锁着的

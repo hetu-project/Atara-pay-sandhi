@@ -25,7 +25,7 @@ func (h *Handler) Router() http.Handler {
 	r.Post("/webhooks/idanalyzer", h.IDAnalyzerWebhook)
 
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Use(auth.Middleware(store.DemoHandle, h.St.UserByHandle))
+		r.Use(auth.Middleware(store.DemoHandle, h.St.UserByHandle, h.St.IsBanned))
 
 		r.Route("/catalog", func(r chi.Router) {
 			r.Get("/assets", h.Assets)
@@ -101,15 +101,21 @@ func (h *Handler) Router() http.Handler {
 			})
 			// 状态看板的读模型
 			r.Get("/overview", h.AdminOverview)
+			r.Get("/trends", h.AdminTrends)
 			r.Get("/orders", h.AdminOrders)
 			r.Get("/withdrawals", h.AdminWithdrawals)
 			r.Get("/offers", h.AdminOffers)
 			// 用户 / 商户
 			r.Get("/users", h.AdminUsers)
 			r.Get("/users/{id}", h.AdminUserDetail)
+			r.Post("/users/{id}/ban", h.AdminBanUser)
+			r.Post("/users/{id}/revoke-maker", h.AdminRevokeMaker)
 			// 写动作：强制下架挂单（币留锁定）、提现复核标记
 			r.Post("/offers/{id}/delist", h.AdminForceDelist)
 			r.Post("/withdrawals/{id}/review", h.AdminReviewWithdrawal)
+			r.Post("/withdrawals/{id}/verify", h.AdminVerifyWithdrawal)
+			// 操作审计（只读）
+			r.Get("/audit", h.AdminAudit)
 		})
 
 		// 额度：不是卡，是签进链上的支配权
