@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -67,7 +68,28 @@ func (s *Service) DeskReply(ctx context.Context, ownerID, body string,
 		return nil, err
 	}
 
-	full, err := s.Desk.Stream(ctx, desk.Build(snap, history), onDelta)
+	built := desk.BuildWith(s.deskPersona(ctx), snap, history)
+	inChars := 0
+	for _, m := range built {
+		inChars += len(m.Content)
+	}
+	start := time.Now()
+	full, usage, err := s.Desk.StreamUsage(ctx, built, onDelta)
+	// 记一条调用日志：模型、耗时、成败、进出字数、token 用量与估算成本。
+	// 运维视角用，异步写、失败只记 log——日志缺一条比让用户那次回答挂掉要轻。
+	go func(entry store.AiCallLog) {
+		if e := s.St.LogAiCall(context.Background(), entry); e != nil {
+			log.Printf("ai call log: %v", e)
+		}
+	}(store.AiCallLog{
+		UserID: ownerID, Model: s.Desk.Model, Ok: err == nil, Err: errStr(err),
+		InputChars: inChars, OutputChars: len(full),
+		LatencyMs:        int(time.Since(start).Milliseconds()),
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		TotalTokens:      usage.TotalTokens,
+		CostMicros:       aiCostMicros(s.Desk.Model, usage.PromptTokens, usage.CompletionTokens),
+	})
 	full = strings.TrimSpace(full)
 	if full == "" {
 		if err != nil {
@@ -81,6 +103,85 @@ func (s *Service) DeskReply(ctx context.Context, ownerID, body string,
 	/* 走到这儿 full 非空：即使 err 非 nil（中途断了 / 客户端走了），
 	   也把已经说出口的存下来，让库里和屏幕上看到的一致。 */
 	return s.deskSay(ctx, ownerID, full)
+}
+
+// aiPrice 是每百万 token 的美元单价（输入 / 输出）。这是**估算**用的近似价，
+// 上线前应改成实际合约价。未知模型落到 default。
+var aiPrice = map[string][2]float64{
+	"default":        {0.27, 1.10},
+	"deepseek-chat":  {0.27, 1.10},
+	"deepseek-flash": {0.07, 0.28},
+}
+
+// aiCostMicros 按 token 用量估算成本，单位微美元（cost_usd = 返回值/1e6）。
+// 没拿到 usage（上游不支持 include_usage）时 tokens 为 0，成本自然是 0。
+func aiCostMicros(model string, promptTokens, completionTokens int) int {
+	p, ok := aiPrice[model]
+	if !ok {
+		p = aiPrice["default"]
+	}
+	// cost_micros = tokens * (美元/百万token)，两者相乘正好落在微美元量级。
+	cost := float64(promptTokens)*p[0] + float64(completionTokens)*p[1]
+	return int(cost + 0.5)
+}
+
+// deskPersonaKey 是 AI 人设在 app_settings 里的键。
+const deskPersonaKey = "desk_persona"
+
+// deskPersona 取当前生效的 AI 人设：后台改过就用改的，没改过用默认。
+// 读设置失败不该让对话挂掉——回落默认，模型照常能答。
+func (s *Service) deskPersona(ctx context.Context) string {
+	v, err := s.St.GetSetting(ctx, deskPersonaKey)
+	if err != nil || strings.TrimSpace(v) == "" {
+		return desk.DefaultPersona
+	}
+	return v
+}
+
+// DeskPrompt 是后台「提示词」页要展示的：当前生效人设、默认人设、锁死的护栏、
+// 以及是不是被改过。护栏只读——后台看得到但改不了。
+type DeskPrompt struct {
+	Persona    string `json:"persona"`    // 当前生效（可编辑）
+	Default    string `json:"default"`    // 出厂默认，用于「恢复默认」
+	Guardrails string `json:"guardrails"` // 锁死的安全护栏，只读
+	IsCustom   bool   `json:"is_custom"`  // 是否被后台改过
+}
+
+func (s *Service) GetDeskPrompt(ctx context.Context) (*DeskPrompt, error) {
+	v, err := s.St.GetSetting(ctx, deskPersonaKey)
+	if err != nil {
+		return nil, err
+	}
+	custom := strings.TrimSpace(v) != ""
+	persona := v
+	if !custom {
+		persona = desk.DefaultPersona
+	}
+	return &DeskPrompt{
+		Persona: persona, Default: desk.DefaultPersona,
+		Guardrails: desk.Guardrails(), IsCustom: custom,
+	}, nil
+}
+
+// SetDeskPrompt 保存后台改过的人设。空内容当成「恢复默认」处理（删掉覆盖）。
+func (s *Service) SetDeskPrompt(ctx context.Context, persona, editorID string) error {
+	if strings.TrimSpace(persona) == "" {
+		return s.St.DeleteSetting(ctx, deskPersonaKey)
+	}
+	return s.St.SetSetting(ctx, deskPersonaKey, persona, editorID)
+}
+
+// ResetDeskPrompt 恢复默认人设。
+func (s *Service) ResetDeskPrompt(ctx context.Context) error {
+	return s.St.DeleteSetting(ctx, deskPersonaKey)
+}
+
+// errStr 把 error 转成日志里存的字符串，nil 就是空。
+func errStr(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // deskSay 把一句话记成 desk 说的。

@@ -60,6 +60,11 @@ func addColumns(ctx context.Context, db *sql.DB) error {
 		{"withdrawals", "admin_review", "text not null default ''"},
 		// 封禁标记。被封的账户在 auth 中间层直接挡下（见 auth.Middleware）。
 		{"users", "banned", "integer not null default 0"},
+		// AI 调用的 token 用量与估算成本（后补，老库上 ai_calls 表已存在）。
+		{"ai_calls", "prompt_tokens", "integer not null default 0"},
+		{"ai_calls", "completion_tokens", "integer not null default 0"},
+		{"ai_calls", "total_tokens", "integer not null default 0"},
+		{"ai_calls", "cost_micros", "integer not null default 0"},
 	}
 	for _, w := range want {
 		rows, err := db.QueryContext(ctx, "select name from pragma_table_info(?)", w.table)

@@ -22,6 +22,7 @@ import (
 	"github.com/advaita/atara-pay/internal/domain/model"
 	"github.com/advaita/atara-pay/internal/domain/order"
 	"github.com/advaita/atara-pay/internal/httpx"
+	"github.com/advaita/atara-pay/internal/makerreview"
 	"github.com/advaita/atara-pay/internal/money"
 	"github.com/advaita/atara-pay/internal/settlement"
 	"github.com/advaita/atara-pay/internal/snowflake"
@@ -39,6 +40,11 @@ type Service struct {
 	// Desk 是 Atara AI 对话台接的模型。nil 表示这台机器没配密钥——
 	// 那时对话台照常收消息，只是回一句固定话术，别的功能不受影响。
 	Desk *desk.Client
+
+	// MakerAI 是准入预审的模型层。nil 表示关着——规则层照常工作，
+	// 申请材料一个字节都不出网。跟 Desk 分开挂，因为它们是两个决定：
+	// 对话台开着不代表 KYC 材料可以发给第三方。
+	MakerAI *makerreview.AI
 }
 
 func New(st *store.Store, ag agent.Suite, ch chain.Chain, cfg config.Config, c *auth.Confirmations) *Service {

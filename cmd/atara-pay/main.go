@@ -20,6 +20,7 @@ import (
 	"github.com/advaita/atara-pay/internal/chain/mockchain"
 	"github.com/advaita/atara-pay/internal/config"
 	"github.com/advaita/atara-pay/internal/desk"
+	"github.com/advaita/atara-pay/internal/makerreview"
 	"github.com/advaita/atara-pay/internal/scheduler"
 	"github.com/advaita/atara-pay/internal/store"
 	"github.com/shopspring/decimal"
@@ -79,6 +80,28 @@ func main() {
 		svc.Desk = desk.New(cfg.Desk.APIKey, cfg.Desk.BaseURL, cfg.Desk.Model, cfg.Desk.MaxTokens)
 		deskLabel = cfg.Desk.Model
 	}
+	/* 准入预审的模型层。要显式开（ATARA_MAKER_AI=true）才挂上去——
+	   关着的时候规则层照常工作，申请材料一个字节都不出网。
+	   跟对话台分开，因为它们是两个决定：对话台开着不代表 KYC 材料可以
+	   发给境外第三方。能发哪些字段见 makerreview/redact.go 那份白名单。 */
+	/* 身份核验是模拟的就吼一声。
+	   一台在模拟核验的机器，跟一台在真核验的机器，外表完全一样——
+	   界面上一样的绿勾、库里一样的 kyc_ok。唯一能让人发现的就是这一行，
+	   所以它必须刺眼，而且不能跟别的状态挤在同一行里一带而过。 */
+	if cfg.KYC.Simulated() {
+		log.Printf("⚠ 身份核验已关闭（ATARA_KYC=false）：不打 ID Analyzer，" +
+			"任何人点一下就算通过。仅限本地开发。")
+	}
+	makerAILabel := "off"
+	if cfg.MakerAI() {
+		svc.MakerAI = &makerreview.AI{
+			Client:  svc.Desk,
+			ModelID: cfg.Desk.Model,
+			Timeout: 20 * time.Second,
+		}
+		makerAILabel = cfg.Desk.Model
+		log.Printf("准入预审模型层已开启 · 出网字段 kyc=%v", makerreview.Outbound("kyc"))
+	}
 	go scheduler.New(svc).Run(ctx)
 
 	srv := &http.Server{
@@ -87,8 +110,8 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
-		log.Printf("atara-pay listening on %s · db=%s · agent=%s · chain=%s · desk=%s · custody=self · demo-timing=%v",
-			cfg.Addr, cfg.DBPath, cfg.AgentImpl, chainLabel, deskLabel, cfg.DemoTiming)
+		log.Printf("atara-pay listening on %s · db=%s · agent=%s · chain=%s · desk=%s · maker-ai=%s · custody=self · demo-timing=%v",
+			cfg.Addr, cfg.DBPath, cfg.AgentImpl, chainLabel, deskLabel, makerAILabel, cfg.DemoTiming)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("serve: %v", err)
 		}

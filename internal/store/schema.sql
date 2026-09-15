@@ -307,6 +307,31 @@ create table if not exists maker_applications (
   updated_at    text not null
 );
 
+-- 准入预审。一次审一行。
+--
+-- 为什么不在 maker_applications 上加列覆盖式存：留痕要能回答「从哪天开始
+-- 判得不对的」。覆盖式存不了历史，模型换了版本、或者哪天开始误判，都没有
+-- 可比对的东西。跟下面 kyc_checks 是同一个取舍。
+create table if not exists maker_reviews (
+  id          text primary key,
+  user_id     text not null references users(id),
+  stage       text not null check (stage in ('kyc','listing')),
+  -- 谁出的这一票：规则层 / 模型 / 人
+  source      text not null check (source in ('rule','ai','human')),
+  verdict     text not null check (verdict in ('pass','revise','escalate')),
+  -- 逐项问题的原文。摘要另存 maker_applications.reject_reason，
+  -- 那一列是给已有的 admin 后台和 AI 聊天窗读的。
+  issues_json text not null default '[]',
+  -- 模型版本。换版本要能把前后切开，不然「是不是换版本之后开始判错的」
+  -- 这个问题没有答案。规则层留空。
+  model_id    text not null default '',
+  -- 送审那份表单的哈希。同一份材料换个模型判得一样吗——要复盘就得有它。
+  input_hash  text not null default '',
+  latency_ms  integer not null default 0,
+  created_at  text not null
+);
+create index if not exists idx_maker_reviews_user on maker_reviews(user_id, created_at desc);
+
 -- 身份核验。一次 DocuPass 会话一行，以 reference 为主键。
 --
 -- 为什么不是一个用户一行：一个人可能核好几次（第一次证件糊了、链接过期、
@@ -391,3 +416,34 @@ create table if not exists admin_audit (
   created_at  text not null
 );
 create index if not exists idx_admin_audit_time on admin_audit(created_at desc);
+
+-- AI 助手（Atara AI / DeepSeek）调用日志。对话内容本身存在 messages 表里
+-- （peer_id = 'user-desk'）；这张表记的是每次调用的运维指标：谁、什么模型、
+-- 多久、成没成、进出多少字。token/成本要改流式接口拿 usage，先不做。
+create table if not exists ai_calls (
+  id           integer primary key autoincrement,
+  user_id      text not null,
+  model        text not null default '',
+  ok           integer not null default 1,
+  err          text not null default '',
+  input_chars  integer not null default 0,
+  output_chars integer not null default 0,
+  latency_ms   integer not null default 0,
+  -- token 用量与估算成本。prompt/completion 来自上游 usage；cost_micros 是
+  -- 按模型单价估算的微美元（cost_usd = cost_micros/1e6），单价见 app/desk.go。
+  prompt_tokens     integer not null default 0,
+  completion_tokens integer not null default 0,
+  total_tokens      integer not null default 0,
+  cost_micros       integer not null default 0,
+  created_at   text not null
+);
+create index if not exists idx_ai_calls_time on ai_calls(created_at desc);
+
+-- 后台可调的键值设置（目前只有 AI 人设 desk_persona）。留一张通用表，
+-- 后面别的可调项也往这儿放，不用一项建一张表。
+create table if not exists app_settings (
+  key        text primary key,
+  value      text not null default '',
+  updated_by text not null default '',
+  updated_at text not null
+);

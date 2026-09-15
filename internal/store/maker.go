@@ -116,11 +116,22 @@ func (s *Store) ReviewMakerApp(ctx context.Context, userID, stage, decision, rea
 	case stage == "kyc" && decision == "approve":
 		set = `kyc_ok=1, phase='listing', reject_reason=''`
 	case stage == "kyc" && decision == "reject":
-		set = `kyc_ok=0, kyc_done=0, reject_reason=?`
+		// kyc_done 保持 1。它记的是「交过了」，不是「审过了」——两件事
+		// 用同一位表示，打回之后这份申请就跟从没交过一模一样，而 reject_reason
+		// 在前端唯一的落点挂在「交过了」那一段里，于是理由存了却没人看得见，
+		// 用户被丢回一张空表单，不知道哪里要改。
+		//
+		// 三态由这两位加理由读出来：
+		//   done=0                          还没交
+		//   done=1 ok=0 reason=''           在审
+		//   done=1 ok=0 reason!=''          打回，等你改
+		//   ok=1                            过了
+		set = `kyc_ok=0, reject_reason=?`
 	case stage == "listing" && decision == "approve":
 		set = `approved=1, reject_reason=''`
 	case stage == "listing" && decision == "reject":
-		set = `approved=0, listing_done=0, reject_reason=?`
+		// 同上：listing_done 保持 1
+		set = `approved=0, reject_reason=?`
 	default:
 		return fmt.Errorf("bad review: stage=%q decision=%q", stage, decision)
 	}
@@ -128,9 +139,22 @@ func (s *Store) ReviewMakerApp(ctx context.Context, userID, stage, decision, rea
 	if decision == "reject" {
 		args = append(args, reason)
 	}
-	args = append(args, ts(Now()), reviewerID, ts(Now()), userID)
+	/* 不是人出的票就存 NULL。
+	
+	   reviewer_id 有外键指向 users，塞一个 "system:rule" 这样的假 id 进去
+	   会撞约束；而「谁出的这一票」本来也不该记在这儿——maker_reviews.source
+	   分得清规则层、模型和人，那才是它的位置。这一列只回答「哪个人审的」，
+	   没有人审就是没有。 */
+	var reviewer any
+	if reviewerID != "" {
+		reviewer = reviewerID
+	}
+	args = append(args, ts(Now()), reviewer, ts(Now()), userID)
+	// 审过了就把闹钟摘掉。不摘的话，打回之后那份申请仍然满足 sweep 的条件
+	// （done=1、ok=0），十秒后被自动放行——人刚驳回的东西，钟把它放了过去。
 	res, err := s.db.ExecContext(ctx,
-		`update maker_applications set `+set+`, reviewed_at=?, reviewer_id=?, updated_at=?
+		`update maker_applications set `+set+`, reviewed_at=?, reviewer_id=?,
+		        auto_review_at=null, updated_at=?
 		  where user_id=?`, args...)
 	if err != nil {
 		return err

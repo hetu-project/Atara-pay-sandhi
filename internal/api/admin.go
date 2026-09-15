@@ -33,6 +33,16 @@ func (h *Handler) AdminOrders(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"orders": rows})
 }
 
+// AdminOrderDetail 是单笔订单的全貌（本体 + 事件时间线 + 争议案卷）。只读。
+func (h *Handler) AdminOrderDetail(w http.ResponseWriter, r *http.Request) {
+	d, err := h.St.AdminOrderDetail(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, httpx.NotFound("order"))
+		return
+	}
+	ok(w, d)
+}
+
 func (h *Handler) AdminWithdrawals(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.St.AdminWithdrawals(r.Context(), limitParam(r))
 	if err != nil {
@@ -157,6 +167,109 @@ func (h *Handler) AdminVerifyWithdrawal(w http.ResponseWriter, r *http.Request) 
 	}
 	h.audit(r, "withdrawal.verify", "withdrawal", id, detail)
 	ok(w, map[string]any{"verification": v, "flag": flag, "message": detail})
+}
+
+// AdminKycList 列出身份核验记录。?status=review 只看待人工复核的那批。只读。
+func (h *Handler) AdminKycList(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	rows, err := h.St.AdminKycList(r.Context(), status, limitParam(r))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, map[string]any{"checks": rows})
+}
+
+// AdminKycDetail 按 reference 取单次核验详情（证件 + 风险警告）。只读。
+func (h *Handler) AdminKycDetail(w http.ResponseWriter, r *http.Request) {
+	d, err := h.St.AdminKycByReference(r.Context(), chi.URLParam(r, "reference"))
+	if err != nil {
+		httpx.Error(w, httpx.NotFound("kyc check"))
+		return
+	}
+	ok(w, d)
+}
+
+// AdminAiPrompt 返回 AI 提示词：可编辑人设 + 锁死护栏。
+func (h *Handler) AdminAiPrompt(w http.ResponseWriter, r *http.Request) {
+	p, err := h.Svc.GetDeskPrompt(r.Context())
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, p)
+}
+
+// AdminSetAiPrompt 保存后台改过的人设。护栏改不了——只收 persona。
+func (h *Handler) AdminSetAiPrompt(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Persona string `json:"persona"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.Svc.SetDeskPrompt(r.Context(), req.Persona, h.actorID(r)); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	custom := len(req.Persona) > 0
+	detail := "reset to default"
+	if custom {
+		detail = "updated"
+	}
+	h.audit(r, "ai.prompt", "setting", "desk_persona", detail)
+	ok(w, map[string]any{"ok": true})
+}
+
+// AdminResetAiPrompt 恢复默认人设。
+func (h *Handler) AdminResetAiPrompt(w http.ResponseWriter, r *http.Request) {
+	if err := h.Svc.ResetDeskPrompt(r.Context()); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	h.audit(r, "ai.prompt", "setting", "desk_persona", "reset to default")
+	ok(w, map[string]any{"ok": true})
+}
+
+// AdminAiStats 是 AI 调用聚合概览。只读。
+func (h *Handler) AdminAiStats(w http.ResponseWriter, r *http.Request) {
+	st, err := h.St.AdminAiStats(r.Context())
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, st)
+}
+
+// AdminAiCalls 是 AI 调用日志（最近在前）。只读。
+func (h *Handler) AdminAiCalls(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.St.AdminAiCalls(r.Context(), limitParam(r))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, map[string]any{"calls": rows})
+}
+
+// AdminAiConversations 列出跟 Atara AI 聊过的用户。只读。
+func (h *Handler) AdminAiConversations(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.St.AdminAiConversations(r.Context(), store.DeskID, limitParam(r))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, map[string]any{"conversations": rows})
+}
+
+// AdminAiThread 读某个用户跟 AI 的整段对话。只读。
+func (h *Handler) AdminAiThread(w http.ResponseWriter, r *http.Request) {
+	msgs, err := h.St.AdminAiThread(r.Context(), store.DeskID, chi.URLParam(r, "user_id"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	ok(w, map[string]any{"messages": msgs})
 }
 
 // AdminAudit 是操作审计列表（最近在前）。只读。

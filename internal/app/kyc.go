@@ -67,6 +67,9 @@ type KycSession struct {
 // customData 放我们的 user id：ID Analyzer 不认识我们的用户，结果回来时
 // 全靠它认人。不放的话，一份回调到手只知道"有人验过了"。
 func (s *Service) StartKyc(ctx context.Context, userID string) (*KycSession, error) {
+	if s.Cfg.KYC.Simulated() {
+		return s.simulateKyc(ctx, userID)
+	}
 	c := s.kycClient()
 	if c == nil {
 		return nil, errKycNotConfigured
@@ -92,6 +95,46 @@ func (s *Service) StartKyc(ctx context.Context, userID string) (*KycSession, err
 	return &KycSession{Reference: sess.Reference, URL: sess.URL, QRCode: sess.QRCode}, nil
 }
 
+/*
+simulateKyc 是本地开发用的核验：不打上游，当场判过。
+
+走的是**跟真核验同一条落库路径**（StartKycCheck → SaveKycResult → MarkKycOk），
+不是在别处另开一个「假装通过」的分支。这样模拟和真实产生的库状态完全一样，
+本地测出来的行为就是线上的行为；另写一条路的话，两边迟早会长得不一样，
+而差异只会在生产上暴露。
+
+签发的证件号写死成 SIMULATED-xxxx，而且姓名是 Test Applicant——
+任何一眼扫过数据库或界面的人都该立刻看出这不是一份真的核验。
+*/
+func (s *Service) simulateKyc(ctx context.Context, userID string) (*KycSession, error) {
+	ref := "sim-" + store.NewID()
+	if err := s.St.StartKycCheck(ctx, ref, userID); err != nil {
+		return nil, err
+	}
+	id := kyc.Identity{
+		FirstName: "Test", LastName: "Applicant", FullName: "Test Applicant",
+		DocType: "Passport", DocNumber: "SIMULATED-" + ref[len(ref)-4:],
+		DOB: "1990-01-01", Issued: "2020-01-01", Expiry: "2030-01-01",
+		Sex: "Male", Nationality: "Hong Kong", Country: "HKG",
+	}
+	idJSON, err := json.Marshal(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.St.SaveKycResult(ctx, ref, store.KycResult{
+		Status: "accept", Event: "simulated", Source: "simulated",
+		IdentityJSON: string(idJSON), WarningsJSON: "[]", RawJSON: "{}",
+	}); err != nil {
+		return nil, err
+	}
+	if err := s.St.MarkKycOk(ctx, userID); err != nil {
+		return nil, err
+	}
+	log.Printf("kyc: 模拟核验（ATARA_KYC=false）user=%s ref=%s", userID, ref)
+	// URL 留空：没有东西可开。前端据此不去弹窗口，直接显示已通过。
+	return &KycSession{Reference: ref}, nil
+}
+
 // KycStatus 是前端那个查询接口的返回。
 type KycStatus struct {
 	// State: none | pending | accept | review | reject
@@ -107,14 +150,27 @@ type KycStatus struct {
 	ConcludedAt *time.Time `json:"concluded_at,omitempty"`
 	// Configured 说这台机器配没配 ID Analyzer。没配时前端要说
 	// "这台机器没开身份核验"，而不是显示一颗按不动的按钮。
+	//
+	// 模拟模式下它是 true：流程是通的，按钮该能按。真假由下面那个字段说。
 	Configured bool `json:"configured"`
+	// Simulated 说刚才那一步没有真的验过任何东西。
+	//
+	// 必须单独发出来、而且界面上必须显式说出来：一个「已通过」的绿勾背后
+	// 是真核验还是本地开关，看的人有权知道。藏起来的话，谁截个图就能拿去
+	// 当作「我们验过了」。
+	Simulated bool `json:"simulated,omitempty"`
 }
 
 // KycStatusFor 查这个用户的当前状态，顺带去上游拉一次。
 //
 // refresh=false 时只读库——列表页之类的地方不该每次渲染都打一次上游。
 func (s *Service) KycStatusFor(ctx context.Context, userID string, refresh bool) (*KycStatus, error) {
-	out := &KycStatus{State: "none", Configured: s.Cfg.KYC.Configured()}
+	sim := s.Cfg.KYC.Simulated()
+	out := &KycStatus{
+		State:      "none",
+		Configured: s.Cfg.KYC.Configured() || sim,
+		Simulated:  sim,
+	}
 
 	// 能不能下单看的是"有没有通过过"，不是最近这一次。一个已经验过的人
 	// 又开了一次新会话时，他的身份不该在那一刻变回未验证。
@@ -134,7 +190,9 @@ func (s *Service) KycStatusFor(ctx context.Context, userID string, refresh bool)
 
 	// 还没有结论就去拉一次。已经有结论的不再拉：那份结果不会再变，
 	// 每次进页面都打一次上游是白花钱（DocuPass 按次计费）。
-	if refresh && !cur.Concluded() {
+	// 模拟模式不拉上游：那边没有这条会话，拉一次只会拿回一个 404
+	// 并在日志里刷一行看着像故障的错。
+	if refresh && !cur.Concluded() && !sim {
 		if c := s.kycClient(); c != nil {
 			if updated, err := s.pull(ctx, c, cur); err != nil {
 				// 拉不到不是错误：人可能还没走完，上游也可能正好在抖。

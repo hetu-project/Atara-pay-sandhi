@@ -103,6 +103,7 @@ func (h *Handler) Router() http.Handler {
 			r.Get("/overview", h.AdminOverview)
 			r.Get("/trends", h.AdminTrends)
 			r.Get("/orders", h.AdminOrders)
+			r.Get("/orders/{id}", h.AdminOrderDetail)
 			r.Get("/withdrawals", h.AdminWithdrawals)
 			r.Get("/offers", h.AdminOffers)
 			// 用户 / 商户
@@ -114,6 +115,17 @@ func (h *Handler) Router() http.Handler {
 			r.Post("/offers/{id}/delist", h.AdminForceDelist)
 			r.Post("/withdrawals/{id}/review", h.AdminReviewWithdrawal)
 			r.Post("/withdrawals/{id}/verify", h.AdminVerifyWithdrawal)
+			// 身份核验（只读）：列表 + 单次详情。人工放行/驳回待与后端口径对齐后再加。
+			r.Get("/kyc", h.AdminKycList)
+			r.Get("/kyc/{reference}", h.AdminKycDetail)
+			// AI 助手：调用日志 + 对话查看（只读）+ 提示词（人设可改、护栏锁死）
+			r.Get("/ai/prompt", h.AdminAiPrompt)
+			r.Post("/ai/prompt", h.AdminSetAiPrompt)
+			r.Post("/ai/prompt/reset", h.AdminResetAiPrompt)
+			r.Get("/ai/stats", h.AdminAiStats)
+			r.Get("/ai/calls", h.AdminAiCalls)
+			r.Get("/ai/conversations", h.AdminAiConversations)
+			r.Get("/ai/conversations/{user_id}", h.AdminAiThread)
 			// 操作审计（只读）
 			r.Get("/audit", h.AdminAudit)
 		})

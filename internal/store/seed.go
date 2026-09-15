@@ -51,8 +51,13 @@ func (s *Store) Seed(ctx context.Context, ch Funder, full bool) error {
 		return err
 	}
 
+	/* 「库里已经有人了就不灌」——但对话台那个账号不算数：它刚刚由上面那句
+	   ensureDesk 插进去的。不把它排除掉，全新的库数到 1 就直接返回，demo 和
+	   reviewer 两个账户一个都建不出来，新装一份跑起来是空的：没人能登，
+	   审核台也没有 reviewer 可用。 */
 	var n int
-	if err := s.db.QueryRowContext(ctx, `select count(*) from users`).Scan(&n); err != nil {
+	if err := s.db.QueryRowContext(ctx,
+		`select count(*) from users where id<>?`, DeskID).Scan(&n); err != nil {
 		return err
 	}
 	if n > 0 {

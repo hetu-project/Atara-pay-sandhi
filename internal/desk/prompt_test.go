@@ -100,7 +100,9 @@ func TestSystemPromptKeepsTheHardRules(t *testing.T) {
 		"illustrative",   // 演示数据要说明
 		"plain text",     // 气泡是纯文本渲染的，markdown 会原样印出来
 	} {
-		if !strings.Contains(strings.ToLower(system), strings.ToLower(want)) {
+		// 提示词现在拆成「可编辑人设」+「锁死护栏」两段，合起来才是完整规矩。
+		full := DefaultPersona + "\n" + systemGuardrails
+		if !strings.Contains(strings.ToLower(full), strings.ToLower(want)) {
 			t.Errorf("系统提示里丢了 %q 这条规矩", want)
 		}
 	}

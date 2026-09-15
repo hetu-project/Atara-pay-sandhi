@@ -85,6 +85,9 @@ type Config struct {
 	KYC KYCConfig
 
 	Desk DeskConfig
+
+	// MakerAIOn 由 ATARA_MAKER_AI 开启。见 Config.MakerAI。
+	MakerAIOn bool
 }
 
 type DeskConfig struct {
@@ -97,6 +100,13 @@ type DeskConfig struct {
 }
 
 func (d DeskConfig) Configured() bool { return d.APIKey != "" }
+
+// MakerAI 决定准入预审要不要跑模型层。
+//
+// 默认关着，而且刻意跟 Desk 的密钥分开：对话台开着不代表准入材料可以出网。
+// 申请表里有身份信息，哪些字段能发给境外第三方是一个需要有人点头的决定
+// （白名单见 makerreview/redact.go），不该由「密钥配了没」顺带决定。
+func (c Config) MakerAI() bool { return c.Desk.Configured() && c.MakerAIOn }
 
 // KYCConfig 是 ID Analyzer（DocuPass）的接入参数。
 //
@@ -128,11 +138,31 @@ type KYCConfig struct {
 	// 日文 ja……（完整列表见 v.idanalyzer.com/asset/language.json）。
 	// 写成 zh-CN 是认不出来的，那会悄悄退回按浏览器猜。
 	Language string
+
+	/*
+		Live 决定要不要真的去打 ID Analyzer。由 ATARA_KYC 控制，**默认 true**。
+
+		为什么默认是真的：把「真的核验身份」做成需要显式打开的东西，总有一天
+		会有一台机器忘了打开——而那台机器上谁都能通过。默认危险、靠配置去救，
+		是这一类开关最常见的出事方式。所以反过来：不写就是真的，要绕过必须
+		明说 ATARA_KYC=false。
+
+		关掉之后本地不再打上游、不再按次计费，核验一步当场判过。**只该用于
+		本地开发**——它签发的是一份写着 SIMULATED 的证件，谁都能拿到。
+	*/
+	Live bool
 }
 
 // Configured 说这套参数齐不齐。没有 key 就什么都做不了；
 // Profile 可以是内置预设，所以也必须有一个值。
 func (k KYCConfig) Configured() bool { return k.APIKey != "" && k.Profile != "" }
+
+// Simulated 说这台机器在模拟核验。
+//
+// 跟 Configured 是两件事：Configured 问「能不能做」，Simulated 问「做的是
+// 真的吗」。界面上两者都要说——一台模拟的机器功能是通的（所以不能报
+// 「没配置」），但用户得知道刚才那一步没有真的验过任何东西。
+func (k KYCConfig) Simulated() bool { return !k.Live }
 
 // VoiceConfig 是科大讯飞实时语音听写（IAT）的密钥。
 //
@@ -176,6 +206,7 @@ func Load() Config {
 		CORSOrigins: env("ATARA_CORS_ORIGINS", "*"),
 		ChainImpl:   env("ATARA_CHAIN_IMPL", "mock"),
 		Seed:        envBool("ATARA_SEED", false),
+		MakerAIOn:   envBool("ATARA_MAKER_AI", false),
 		SchedTick:   envDur("ATARA_SCHED_TICK", 0),
 		Chain: ChainConfig{
 			RPCURL:       env("ATARA_RPC_URL", "http://127.0.0.1:8545"),
@@ -193,6 +224,8 @@ func Load() Config {
 			APISecret: env("IFLYTEK_API_SECRET", ""),
 		},
 		KYC: KYCConfig{
+			// 不设就是真的。要绕过得显式写 ATARA_KYC=false——见 KYCConfig.Live。
+			Live:          envBool("ATARA_KYC", true),
 			APIKey:        env("IDANALYZER_API_KEY", ""),
 			Profile:       env("IDANALYZER_PROFILE", "security_medium"),
 			Region:        env("IDANALYZER_REGION", "us"),
@@ -204,7 +237,12 @@ func Load() Config {
 			APIKey:    env("DEEPSEEK_API_KEY", ""),
 			BaseURL:   env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
 			Model:     env("DEEPSEEK_MODEL", "deepseek-chat"),
-			MaxTokens: envPosInt("DEEPSEEK_MAX_TOKENS", 800),
+			// 默认给到 8000。**推理模型的 max_tokens 限的是推理加回答的总和**，
+			// 给小了会出现「推理把额度用光、一个字没答」——而那些推理 token
+			// 是照样计费的，等于花了钱什么也没拿到。实测一次琐碎问题的推理就能
+			// 用掉 2490 个 token，800 远远不够。
+			// 上限不是花费：只按实际生成的部分计费，留足余量没有代价。
+			MaxTokens: envPosInt("DEEPSEEK_MAX_TOKENS", 8000),
 		},
 	}
 	if c.DemoTiming {

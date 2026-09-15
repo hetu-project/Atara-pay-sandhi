@@ -3,11 +3,13 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/advaita/atara-pay/internal/httpx"
+	"github.com/advaita/atara-pay/internal/makerreview"
 	"github.com/advaita/atara-pay/internal/store"
 )
 
@@ -55,23 +57,96 @@ func (s *Service) SubmitMakerApplication(ctx context.Context, userID string,
 	} else {
 		next.ListingDone = true
 	}
-	// 收下材料先进「审核中」，隔一会儿由调度器放行——两段都一样。
-	//
-	// 真实环境这一步是有人看件的，但那条路在演示里是个死胡同：没人去审核台
-	// 点一下，提交完的账户就永远停在审核中，后面的挂单配置、成交全都走不下去。
-	// 所以放行留给钟，而不是当场置位——当场变「已通过」，用户看不到有人审过件
-	// 这件事发生过，界面上那张「已收到，审核中」的卡片也就白做了。
-	//
-	// 时间写进库、由每秒一次的 sweep 来推，不是起个睡 5 秒的 goroutine：
-	// 进程重启后 goroutine 就没了，申请会永远卡在审核中。
-	if d := s.Cfg.T.MakerReview; d > 0 {
-		t := time.Now().Add(d)
-		next.AutoReviewAt = &t
+
+	/* 规则层当场审一遍。
+
+	   能写成规则的绝不交给模型：这一层稳定、可测试、不会变笨，模型故障时
+	   它照常工作（PRD §8.4「规则模板与模型判断的双层结构」）。规则层挑出
+	   问题的，直接打回，不必再花一次模型调用——结论已经确定了。 */
+	issues := makerreview.CheckKYC(req.Form)
+	if req.Phase == "listing" {
+		issues = makerreview.CheckListing(req.Form)
+	}
+	verdict := makerreview.VerdictOf(issues)
+	source := makerreview.SourceRule
+	modelID, latency := "", 0
+
+	/* 规则层没话说的，才轮到模型层。
+
+	   反过来不行：规则层已经确定的结论没有理由再花一次模型调用，而且
+	   「必填项空着」那种话由模型来说既慢又可能说岔。 */
+	if verdict == makerreview.Pass && s.MakerAI != nil {
+		t0 := time.Now()
+		r, err := s.MakerAI.Review(ctx, req.Phase, req.Form)
+		latency = int(time.Since(t0).Milliseconds())
+		switch {
+		case errors.Is(err, makerreview.ErrOff):
+			// 这一层关着：什么都没发生，照规则层的结论走。
+		case err != nil:
+			/* 模型挂了不是「你材料有问题」。转人工、保持不放行，
+			   而且不编一条指摘出来——这一刻出问题的是我们。
+			   （MAKER-REVIEW-AI.md §6） */
+			log.Printf("maker review: 模型层 %s/%s: %v", userID, req.Phase, err)
+			issues, verdict, source = r.Issues, r.Verdict, makerreview.SourceAI
+			modelID = s.Cfg.Desk.Model
+		default:
+			issues, verdict, source = r.Issues, r.Verdict, makerreview.SourceAI
+			modelID = s.Cfg.Desk.Model
+		}
+	}
+
+	// 只有规则层没话说的才继续往下走。有话说就当场落定，闹钟不上——
+	// 一份已经有结论的申请没有理由再等钟。
+	if verdict == makerreview.Pass {
+		/* 收下材料先进「审核中」，隔一会儿由调度器放行。
+
+		   真实环境这一步是有人看件的，但那条路在演示里是个死胡同：没人去
+		   审核台点一下，提交完的账户就永远停在审核中，后面全走不下去。
+
+		   时间写进库、由每秒一次的 sweep 来推，不是起个睡 5 秒的 goroutine：
+		   进程重启后 goroutine 就没了，申请会永远卡在审核中。 */
+		if d := s.Cfg.T.MakerReview; d > 0 {
+			t := time.Now().Add(d)
+			next.AutoReviewAt = &t
+		}
 	}
 	if err := s.St.UpsertMakerApp(ctx, next); err != nil {
 		return nil, err
 	}
+
+	/* 留痕先写，再落裁决。
+
+	   写失败不回给用户：留痕是给事后复盘用的，而申请人这一刻在等一个回复。
+	   为了一行日志把他的提交判成失败，是把两件事的轻重弄反了。 */
+	if err := s.St.InsertMakerReview(ctx, store.MakerReview{
+		UserID: userID, Stage: req.Phase,
+		Source: source, Verdict: string(verdict),
+		IssuesJSON: issuesJSON(issues), InputHash: store.HashInput(req.Form),
+		ModelID: modelID, LatencyMs: latency,
+	}); err != nil {
+		log.Printf("maker review: 留痕 %s/%s: %v", userID, req.Phase, err)
+	}
+
+	if verdict != makerreview.Pass {
+		/* 打回与转人工都写进 reject_reason，由 ReviewMakerApp 走既有那条路：
+		   它会把「交过了」那一位留着、把闹钟摘掉，前端据此把表单带着原内容
+		   重新铺开。两种出口在库里长得一样，区别在 maker_reviews 那一行的
+		   verdict 上——转人工的那些等人来点，打回的那些等用户改。 */
+		if err := s.St.ReviewMakerApp(ctx, userID, req.Phase, "reject",
+			makerreview.Summary(issues), ""); err != nil {
+			return nil, err
+		}
+	}
 	return s.St.MakerApp(ctx, userID)
+}
+
+// issuesJSON 把逐项问题序列化进留痕。序列化不出来也不能让提交失败。
+func issuesJSON(issues []makerreview.Issue) string {
+	b, err := json.Marshal(issues)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 // SweepMakerReviews 放行到点的准入申请。由调度器每秒调一次。
