@@ -65,6 +65,12 @@ func addColumns(ctx context.Context, db *sql.DB) error {
 		{"ai_calls", "completion_tokens", "integer not null default 0"},
 		{"ai_calls", "total_tokens", "integer not null default 0"},
 		{"ai_calls", "cost_micros", "integer not null default 0"},
+		// Maker onboarding review: the AI layer's retry queue, and the
+		// applicant's appeal against a decision.
+		{"maker_applications", "ai_retry_at", "text"},
+		{"maker_applications", "ai_attempts", "integer not null default 0"},
+		{"maker_applications", "appeal_note", "text not null default ''"},
+		{"maker_applications", "appealed_at", "text"},
 	}
 	for _, w := range want {
 		rows, err := db.QueryContext(ctx, "select name from pragma_table_info(?)", w.table)

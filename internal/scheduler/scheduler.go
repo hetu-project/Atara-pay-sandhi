@@ -53,10 +53,16 @@ func (s *Scheduler) Run(ctx context.Context) {
 	}
 }
 
-// sweepDesk 放行到点的准入申请。单独一条循环——它不碰链，见 deskTick。
+// sweepDesk 放行到点的准入申请，并重跑那些模型层没跑成的。
+// 单独一条循环——它不碰链，见 deskTick。
 func (s *Scheduler) sweepDesk(ctx context.Context) {
 	if err := s.Svc.SweepMakerReviews(ctx, time.Now()); err != nil {
 		log.Printf("scheduler: maker reviews: %v", err)
+	}
+	/* 模型读不了不是「你材料有问题」，也不该为此惊动人：排一次重试，
+	   由这里回来重跑，连着失败到上限才转人工。 */
+	if err := s.Svc.SweepAIRetries(ctx, time.Now()); err != nil {
+		log.Printf("scheduler: ai retries: %v", err)
 	}
 }
 

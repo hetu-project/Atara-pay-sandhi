@@ -19,6 +19,15 @@ func (h *Handler) Fiats(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"corridors": money.Corridors()})
 }
 
+// Rails 报出能用的法币收款渠道。
+//
+// 跟 Chain 同一个理由：写死在前端的目录会跟后端的能力漂开。渠道表原来在
+// 前端,列了三档后端根本不结算的法币,选了的人配置照样审过,然后永远撮合
+// 不到单——而他不会收到任何报错。
+func (h *Handler) Rails(w http.ResponseWriter, r *http.Request) {
+	ok(w, map[string]any{"groups": money.Rails()})
+}
+
 // Chain 报出前端自己发交易要用的网络与合约地址。
 //
 // 为什么由接口发而不是写在前端：合约换一次地址，写死的前端就会把钱

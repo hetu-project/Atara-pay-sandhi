@@ -702,3 +702,71 @@ func waitingText(c *order.Conditional) string {
 	}
 	return "the counterparty"
 }
+
+// ResolveDispute 是平台对争议单的裁决。这是唯一能把 disputed 从死胡同里放出来
+// 的路径——它绕过状态机（见 order.ResolveDispute 的说明），直接动钱并落终态。
+//
+// decision: release（判买家赢，放款给收款方）| refund（判卖家赢，原路退回）。
+// 动钱走和正常完成/退款同一套 settlement，所以放款方向由 PayeeOf 决定，不会搞反。
+func (s *Service) ResolveDispute(ctx context.Context, adminID, orderID, decision string) (*order.Order, error) {
+	release := decision == "release"
+	if decision != "release" && decision != "refund" {
+		return nil, httpx.Fail(http.StatusUnprocessableEntity, "BAD_DECISION", "decision",
+			"decision must be release or refund")
+	}
+	o, err := s.St.Order(ctx, orderID)
+	if err != nil {
+		return nil, httpx.NotFound("order")
+	}
+	if o.State != order.Disputed {
+		return nil, httpx.Fail(http.StatusConflict, "NOT_DISPUTED", "",
+			"this order is not in dispute")
+	}
+	if err := s.hydrateAddrs(ctx, o); err != nil {
+		return nil, err
+	}
+	term := order.TermCompleted
+	if !release {
+		term = order.TermCancelled
+	}
+	// 先动链（链动作没有回滚，必须先成功），再落库。
+	out, err := settlement.Settle(ctx, s.Ch, o, term, chain.ReleaseAuth{})
+	if err != nil {
+		return nil, chainErr(err)
+	}
+	reason := "Dispute resolved — funds released to the buyer."
+	if !release {
+		reason = "Dispute resolved — refunded to the seller."
+	}
+	err = s.St.Tx(ctx, func(tx *sql.Tx) error {
+		fresh, err := store.OrderTx(tx, orderID)
+		if err != nil {
+			return httpx.NotFound("order")
+		}
+		fresh.OwnerAddr, fresh.PayeeAddr, fresh.OTC = o.OwnerAddr, o.PayeeAddr, o.OTC
+		from := fresh.State
+		if _, err := fresh.ResolveDispute(release); err != nil {
+			return httpx.Fail(http.StatusConflict, "NOT_DISPUTED", "", err.Error())
+		}
+		if err := settlement.Record(tx, s.St, fresh, fresh.Terminal, out); err != nil {
+			return err
+		}
+		if err := store.SaveState(tx, fresh); err != nil {
+			return err
+		}
+		if err := store.AppendEvent(tx, fresh.ID, string(from), string(fresh.State),
+			order.ActorSystem, reason, map[string]string{"decision": decision, "by": adminID}); err != nil {
+			return err
+		}
+		if fresh.CounterpartyID != "" {
+			_ = store.PostTx(tx, fresh.OwnerID, fresh.CounterpartyID, &model.Message{
+				Author: "system", Kind: "system", Body: reason, OrderID: fresh.ID,
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.Order(ctx, orderID)
+}

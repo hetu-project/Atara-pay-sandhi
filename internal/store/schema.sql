@@ -304,6 +304,22 @@ create table if not exists maker_applications (
   -- 演示用：到点自动放行。存时间戳而不是起一个睡 5 秒的 goroutine——
   -- 进程重启后 goroutine 就没了，申请会永远卡在「审核中」。
   auto_review_at text,
+  -- 模型层没跑成时的重试时间。
+  --
+  -- 模型读不了不是「你材料有问题」，也不该为此惊动人——绝大多数是一次
+  -- 抖动，隔一会儿再问一次就好。存时间戳同上：起 goroutine 的话进程一重启
+  -- 就没人再管这份申请了。
+  ai_retry_at    text,
+  -- 试过几次。连着失败到上限才转人工——那时它已经不是抖动，是真出事了，
+  -- 而真出事就该有人知道。
+  ai_attempts    integer not null default 0,
+  -- 申请人的申诉。非空表示他不认预审的结论，这一份在等人看。
+  --
+  -- 为什么要留这条路：预审判错了而没有任何路径能推翻它，这个商户就被
+  -- 永久锁在门外——他改也没用，因为他本来就没错。可以一个月零次，
+  -- 但不能不存在。
+  appeal_note    text not null default '',
+  appealed_at    text,
   updated_at    text not null
 );
 
@@ -447,3 +463,24 @@ create table if not exists app_settings (
   updated_by text not null default '',
   updated_at text not null
 );
+
+-- 管理员账号。独立于消费端 users（那边是钱包/社交自助注册）——后台是内部员工，
+-- 指派制、账号密码登录。role 预留 reviewer/admin 之分，当前都当管理员用。
+create table if not exists admin_accounts (
+  id            text primary key,
+  email         text unique not null,
+  password_hash text not null,
+  name          text not null default '',
+  role          text not null default 'admin' check (role in ('reviewer','admin')),
+  disabled      integer not null default 0,
+  created_at    text not null
+);
+
+-- 管理员会话 token。不透明随机串，可吊销、会过期——和 confirmations 一个套路。
+create table if not exists admin_sessions (
+  token      text primary key,
+  admin_id   text not null references admin_accounts(id),
+  expires_at text not null,
+  created_at text not null
+);
+create index if not exists idx_admin_sessions_expiry on admin_sessions(expires_at);

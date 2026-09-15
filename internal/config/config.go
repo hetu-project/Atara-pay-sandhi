@@ -88,6 +88,11 @@ type Config struct {
 
 	// MakerAIOn 由 ATARA_MAKER_AI 开启。见 Config.MakerAI。
 	MakerAIOn bool
+
+	// AdminUser / AdminPassword 是后台首个管理员账号的登录名与密码。
+	// 启动时若这个账号还不存在就据此创建。可在 .env 覆盖。
+	AdminUser     string
+	AdminPassword string
 }
 
 type DeskConfig struct {
@@ -244,6 +249,10 @@ func Load() Config {
 			// 上限不是花费：只按实际生成的部分计费，留足余量没有代价。
 			MaxTokens: envPosInt("DEEPSEEK_MAX_TOKENS", 8000),
 		},
+		// 后台首个管理员的登录名与密码。默认 atara-admin / atara2026，
+		// 生产环境用 .env 覆盖成强密码。
+		AdminUser:     env("ATARA_ADMIN_USER", "atara-admin"),
+		AdminPassword: env("ATARA_ADMIN_PASSWORD", "atara2026"),
 	}
 	if c.DemoTiming {
 		c.T = demoTimings()

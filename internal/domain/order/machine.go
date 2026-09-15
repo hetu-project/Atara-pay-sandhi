@@ -144,6 +144,29 @@ func (o *Order) Apply(ev Event, actor Actor, to State) error {
 	return nil
 }
 
+// ResolveDispute 是平台对争议的裁决：直接从 disputed 推到终态。
+//
+// 它**刻意**绕过转移表和 Apply 的「终态只读」守卫——进 disputed 时 Terminal
+// 已被置成 TermDisputed，Apply 会一律拒绝，那正是争议卡死的原因。裁决不是
+// 任何一方的正常动作，是平台介入，所以走这条独立的口子，而不是往表里加边。
+//
+// release=true 判买家赢，币放给收款方（completed）；false 判卖家赢，
+// 原路退回（cancelled）。只能从 disputed 出发。
+func (o *Order) ResolveDispute(release bool) (Terminal, error) {
+	if o.State != Disputed {
+		return TermNone, fmt.Errorf("%w: order is not in dispute", ErrInvalidTransition)
+	}
+	if release {
+		o.State = Released
+		o.Terminal = TermCompleted
+	} else {
+		o.State = Cancelled
+		o.Terminal = TermCancelled
+	}
+	o.StateDeadline = nil
+	return o.Terminal, nil
+}
+
 func hasActor(xs []Actor, a Actor) bool {
 	for _, x := range xs {
 		if x == a {

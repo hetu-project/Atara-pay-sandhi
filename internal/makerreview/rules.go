@@ -109,10 +109,34 @@ func CheckListing(raw json.RawMessage) []Issue {
 		}
 	}
 
-	if len(d.Rails) == 0 {
+	/* 渠道：必须选,而且必须收一种我们真能结算的法币。
+
+	   选了不可结算法币的渠道,配置即使审过,挂单也永远撮合不到——因为撮合
+	   两侧要对上币种。审的时候不说,就是让人通过了准入再去等一笔永远不来
+	   的生意,而且没有任何报错告诉他为什么。 */
+	switch {
+	case len(d.Rails) == 0:
 		out = append(out, Issue{[]string{"rails"},
 			"No payment rail is selected, so the other side has nowhere to send the money.",
 			"Pick at least one payment rail.", ToRevise})
+	default:
+		bad := []string{}
+		for _, r := range d.Rails {
+			if _, ok := money.RailFiat(r); !ok {
+				bad = append(bad, r)
+			}
+		}
+		if len(bad) == len(d.Rails) {
+			out = append(out, Issue{[]string{"rails"},
+				fmt.Sprintf("%s cannot be settled here — this version settles %s.",
+					strings.Join(bad, " and "), tradableFiats()),
+				fmt.Sprintf("Pick a rail that receives %s.", tradableFiats()), ToRevise})
+		} else if len(bad) > 0 {
+			out = append(out, Issue{[]string{"rails"},
+				fmt.Sprintf("%s cannot be settled here. The rest of what you picked is fine.",
+					strings.Join(bad, " and ")),
+				"Drop those, or submit with the others as they are.", ToRevise})
+		}
 	}
 
 	if !d.Agree {
@@ -120,6 +144,14 @@ func CheckListing(raw json.RawMessage) []Issue {
 			"The terms have not been confirmed.", "Read them through and tick the box.", ToRevise})
 	}
 	return out
+}
+
+func tradableFiats() string {
+	names := []string{}
+	for _, a := range money.Fiats() {
+		names = append(names, a.Code)
+	}
+	return strings.Join(names, ", ")
 }
 
 func tradableCoins() string {

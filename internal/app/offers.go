@@ -297,7 +297,17 @@ func (s *Service) Delist(ctx context.Context, makerID, offerID string) error {
 		// 合约只认原 maker —— 后端去调必然 revert。所以那条路上后端只核验
 		// 「链上已经解开了」，解锁那一下由前端发。
 		l, lerr := s.Ch.ListingLockOf(ctx, o.ID)
-		selfLocked := lerr == nil && l != nil && !strings.EqualFold(l.Maker, s.signerAddress())
+		/* Only demand a wallet signature when there is a signer to compare against.
+		
+		   signerAddress() is empty on any chain that does not sign for us — the
+		   mock one. Comparing a real maker address against "" is never equal, so
+		   every lock looked wallet-owned and every unlist came back asking the
+		   maker to send a transaction they have no wallet to send. The listing
+		   then could not be taken down at all, and the front end swallowed the
+		   error, so the button simply did nothing. */
+		signer := s.signerAddress()
+		selfLocked := lerr == nil && l != nil && signer != "" &&
+			!strings.EqualFold(l.Maker, signer)
 		switch {
 		case selfLocked && l.Open:
 			return httpx.Fail(http.StatusConflict, "UNLOCK_REQUIRED", "",

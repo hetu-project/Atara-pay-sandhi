@@ -58,6 +58,40 @@ func Middleware(defaultHandle string, lookup Lookup, isBanned BannedCheck) func(
 	}
 }
 
+// AdminSessionLookup 把 Bearer token 解成一个管理员 actor（带 role）。
+// 无效返回 error。放在这里而不引 store，理由同 Lookup：auth 不反向依赖 store。
+type AdminSessionLookup func(ctx context.Context, token string) (*model.User, error)
+
+// RequireAdmin 是后台的真鉴权：认 Authorization: Bearer <token>，解成管理员
+// actor 放进上下文。取代 /admin 上原来那道 RequireRole（那道读的是可伪造的
+// X-Atara-User 头）。没带 token 或 token 无效一律 401。
+//
+// 解出来的 actor 是 *model.User 形状，所以下游 actorID / 审计原样复用。
+func RequireAdmin(lookup AdminSessionLookup) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token := bearerToken(r)
+			u, err := lookup(r.Context(), token)
+			if err != nil || u == nil {
+				httpx.Error(w, httpx.Fail(http.StatusUnauthorized, "ADMIN_AUTH_REQUIRED", "",
+					"sign in to the admin console"))
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, u)))
+		})
+	}
+}
+
+// bearerToken 从 Authorization 头取出 Bearer token，没有就返回空串。
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	const p = "Bearer "
+	if len(h) > len(p) && h[:len(p)] == p {
+		return h[len(p):]
+	}
+	return ""
+}
+
 func Actor(ctx context.Context) *model.User {
 	u, _ := ctx.Value(userKey).(*model.User)
 	return u

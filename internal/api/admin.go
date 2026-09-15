@@ -10,10 +10,9 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// 管理后台的只读数据端点。全部挂在 reviewer 角色后面（见 router.go）。
-//
-// 提醒：这一版鉴权是 mock——X-Atara-User 头写谁就是谁，reviewer 角色能被
-// 冒充。所以这些端点在接入真会话验签之前，不能把后端直接暴露到网络上。
+// Admin console data endpoints. All sit behind admin session auth (RequireAdmin,
+// see router.go) -- a Bearer token issued at login, not the spoofable X-Atara-User
+// header. Authorization (the admin role) still lives in atara-pay.
 
 func (h *Handler) AdminOverview(w http.ResponseWriter, r *http.Request) {
 	c, err := h.St.AdminCounts(r.Context())
@@ -33,11 +32,35 @@ func (h *Handler) AdminOrders(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"orders": rows})
 }
 
-// AdminOrderDetail 是单笔订单的全貌（本体 + 事件时间线 + 争议案卷）。只读。
+// AdminOrderDetail is a single order in full (the order + event timeline + dispute case). Read-only.
 func (h *Handler) AdminOrderDetail(w http.ResponseWriter, r *http.Request) {
 	d, err := h.St.AdminOrderDetail(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		httpx.Error(w, httpx.NotFound("order"))
+		return
+	}
+	ok(w, d)
+}
+
+// AdminResolveDispute settles a disputed order: release (pay the buyer) | refund (return to the seller).
+func (h *Handler) AdminResolveDispute(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Decision string `json:"decision"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if _, err := h.Svc.ResolveDispute(r.Context(), h.actorID(r), id, req.Decision); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	h.audit(r, "dispute.resolve", "order", id, req.Decision)
+	// Return the admin detail shape (lowercase fields), consistent with GET /admin/orders/{id}.
+	d, err := h.St.AdminOrderDetail(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, err)
 		return
 	}
 	ok(w, d)
@@ -92,9 +115,9 @@ func (h *Handler) AdminUserDetail(w http.ResponseWriter, r *http.Request) {
 	ok(w, d)
 }
 
-// ── 写动作 ──
+// -- Write actions --
 
-// AdminForceDelist 强制下架挂单。币留锁定（见 store 说明）。
+// AdminForceDelist force-delists an offer. Funds stay locked (see the store note).
 func (h *Handler) AdminForceDelist(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.St.AdminForceDelist(r.Context(), id); err != nil {
@@ -106,7 +129,7 @@ func (h *Handler) AdminForceDelist(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"ok": true})
 }
 
-// AdminReviewWithdrawal 打/撤提现复核标记（suspicious | held | cleared | 空）。
+// AdminReviewWithdrawal sets/clears a withdrawal review flag (suspicious | held | cleared | empty).
 func (h *Handler) AdminReviewWithdrawal(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Flag string `json:"flag"`
@@ -129,8 +152,9 @@ func (h *Handler) AdminReviewWithdrawal(w http.ResponseWriter, r *http.Request) 
 	ok(w, map[string]any{"ok": true})
 }
 
-// AdminVerifyWithdrawal 拿提现的 tx_hash 去链上核验真伪，并据结果打复核标记。
-// mock 链无法核验（哈希是合成的），返回 supported=false、不改标记。
+// AdminVerifyWithdrawal takes the withdrawal tx_hash, verifies it on chain, and sets
+// a review flag from the result. The mock chain cannot verify (synthetic hashes) --
+// it returns supported=false and leaves the flag untouched.
 func (h *Handler) AdminVerifyWithdrawal(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	tx, exists := h.St.AdminWithdrawalTx(r.Context(), id)
@@ -149,7 +173,7 @@ func (h *Handler) AdminVerifyWithdrawal(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !v.Supported {
-		// 不改标记，如实告诉前端这条链核不了。
+		// Don't change the flag; honestly tell the frontend this chain cannot verify.
 		ok(w, map[string]any{"verification": v, "message": "当前链无法核验（mock 链的哈希是合成的）"})
 		return
 	}
@@ -169,7 +193,7 @@ func (h *Handler) AdminVerifyWithdrawal(w http.ResponseWriter, r *http.Request) 
 	ok(w, map[string]any{"verification": v, "flag": flag, "message": detail})
 }
 
-// AdminKycList 列出身份核验记录。?status=review 只看待人工复核的那批。只读。
+// AdminKycList lists KYC checks. ?status=review shows only those awaiting human review. Read-only.
 func (h *Handler) AdminKycList(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	rows, err := h.St.AdminKycList(r.Context(), status, limitParam(r))
@@ -180,7 +204,7 @@ func (h *Handler) AdminKycList(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"checks": rows})
 }
 
-// AdminKycDetail 按 reference 取单次核验详情（证件 + 风险警告）。只读。
+// AdminKycDetail returns one check by reference (document fields + risk warnings). Read-only.
 func (h *Handler) AdminKycDetail(w http.ResponseWriter, r *http.Request) {
 	d, err := h.St.AdminKycByReference(r.Context(), chi.URLParam(r, "reference"))
 	if err != nil {
@@ -190,7 +214,7 @@ func (h *Handler) AdminKycDetail(w http.ResponseWriter, r *http.Request) {
 	ok(w, d)
 }
 
-// AdminAiPrompt 返回 AI 提示词：可编辑人设 + 锁死护栏。
+// AdminAiPrompt returns the AI prompt: the editable persona + the locked guardrails.
 func (h *Handler) AdminAiPrompt(w http.ResponseWriter, r *http.Request) {
 	p, err := h.Svc.GetDeskPrompt(r.Context())
 	if err != nil {
@@ -200,7 +224,7 @@ func (h *Handler) AdminAiPrompt(w http.ResponseWriter, r *http.Request) {
 	ok(w, p)
 }
 
-// AdminSetAiPrompt 保存后台改过的人设。护栏改不了——只收 persona。
+// AdminSetAiPrompt saves an edited persona. Guardrails can't be changed -- it only accepts persona.
 func (h *Handler) AdminSetAiPrompt(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Persona string `json:"persona"`
@@ -222,7 +246,7 @@ func (h *Handler) AdminSetAiPrompt(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"ok": true})
 }
 
-// AdminResetAiPrompt 恢复默认人设。
+// AdminResetAiPrompt restores the default persona.
 func (h *Handler) AdminResetAiPrompt(w http.ResponseWriter, r *http.Request) {
 	if err := h.Svc.ResetDeskPrompt(r.Context()); err != nil {
 		httpx.Error(w, err)
@@ -232,7 +256,7 @@ func (h *Handler) AdminResetAiPrompt(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"ok": true})
 }
 
-// AdminAiStats 是 AI 调用聚合概览。只读。
+// AdminAiStats is the aggregate AI-call overview. Read-only.
 func (h *Handler) AdminAiStats(w http.ResponseWriter, r *http.Request) {
 	st, err := h.St.AdminAiStats(r.Context())
 	if err != nil {
@@ -242,7 +266,7 @@ func (h *Handler) AdminAiStats(w http.ResponseWriter, r *http.Request) {
 	ok(w, st)
 }
 
-// AdminAiCalls 是 AI 调用日志（最近在前）。只读。
+// AdminAiCalls is the AI call log (most recent first). Read-only.
 func (h *Handler) AdminAiCalls(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.St.AdminAiCalls(r.Context(), limitParam(r))
 	if err != nil {
@@ -252,7 +276,7 @@ func (h *Handler) AdminAiCalls(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"calls": rows})
 }
 
-// AdminAiConversations 列出跟 Atara AI 聊过的用户。只读。
+// AdminAiConversations lists users who have chatted with Atara AI. Read-only.
 func (h *Handler) AdminAiConversations(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.St.AdminAiConversations(r.Context(), store.DeskID, limitParam(r))
 	if err != nil {
@@ -262,7 +286,7 @@ func (h *Handler) AdminAiConversations(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"conversations": rows})
 }
 
-// AdminAiThread 读某个用户跟 AI 的整段对话。只读。
+// AdminAiThread reads a user's full conversation with the AI. Read-only.
 func (h *Handler) AdminAiThread(w http.ResponseWriter, r *http.Request) {
 	msgs, err := h.St.AdminAiThread(r.Context(), store.DeskID, chi.URLParam(r, "user_id"))
 	if err != nil {
@@ -272,7 +296,7 @@ func (h *Handler) AdminAiThread(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"messages": msgs})
 }
 
-// AdminAudit 是操作审计列表（最近在前）。只读。
+// AdminAudit is the action audit list (most recent first). Read-only.
 func (h *Handler) AdminAudit(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.St.AdminAudit(r.Context(), limitParam(r))
 	if err != nil {
@@ -282,7 +306,7 @@ func (h *Handler) AdminAudit(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"entries": rows})
 }
 
-// AdminBanUser 封禁/解封账户。body: {"banned": true|false}。
+// AdminBanUser bans/unbans an account. body: {"banned": true|false}.
 func (h *Handler) AdminBanUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Banned bool `json:"banned"`
@@ -292,7 +316,7 @@ func (h *Handler) AdminBanUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	// 不许封自己——否则一手把自己锁在门外，连解封都做不了。
+	// You can't ban yourself -- otherwise you lock yourself out with no way to unban.
 	if id == h.actorID(r) {
 		httpx.Error(w, httpx.Fail(http.StatusConflict, "CANNOT_BAN_SELF", "", "你不能封禁自己"))
 		return
@@ -309,7 +333,7 @@ func (h *Handler) AdminBanUser(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"ok": true})
 }
 
-// AdminRevokeMaker 撤销做市资格（approved→0）。已挂出的单要另走强制下架。
+// AdminRevokeMaker revokes maker approval (approved->0). Already-posted offers must be force-delisted separately.
 func (h *Handler) AdminRevokeMaker(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.St.AdminRevokeMaker(r.Context(), id); err != nil {
@@ -321,15 +345,15 @@ func (h *Handler) AdminRevokeMaker(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"ok": true})
 }
 
-// audit 记一条后台操作。失败只记日志、不影响已成功的动作——审计缺一条比
-// 让业务动作回滚轻。
+// audit records one admin action. On failure it only logs -- it does not undo the
+// action that already succeeded; a missing audit row is lighter than a rollback.
 func (h *Handler) audit(r *http.Request, action, targetType, targetID, detail string) {
 	if err := h.St.LogAudit(r.Context(), h.actorID(r), action, targetType, targetID, detail); err != nil {
 		log.Printf("admin audit: %s %s/%s: %v", action, targetType, targetID, err)
 	}
 }
 
-// limitParam 读 ?limit=，非法或缺省交给 store 层兜底（那里有上限保护）。
+// limitParam reads ?limit=; invalid or missing is left to the store layer (which caps it).
 func limitParam(r *http.Request) int {
 	n, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	return n

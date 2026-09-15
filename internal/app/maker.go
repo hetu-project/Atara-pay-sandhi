@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/advaita/atara-pay/internal/httpx"
@@ -24,11 +26,41 @@ type MakerSubmitReq struct {
 
 func (s *Service) MakerApplication(ctx context.Context, userID string) (*store.MakerApp, error) {
 	a, err := s.St.MakerApp(ctx, userID)
-	if err != nil {
-		// 还没申请过不是错误——前端那颗按钮要显示「Become a maker →」。
+	if errors.Is(err, sql.ErrNoRows) {
+		// Never applied is not an error — the button should read "Become a maker →".
 		return &store.MakerApp{UserID: userID, Phase: "kyc", FormJSON: "{}"}, nil
 	}
-	return a, nil
+	if err != nil {
+		/* Anything else is a real failure and must say so.
+
+		   This used to swallow every error as "never applied". A missing column
+		   after a schema change then surfaced as "application not found" — which
+		   sends whoever is debugging it looking for the wrong thing entirely.
+		   Only ErrNoRows means "no such application". */
+		return nil, err
+	}
+	return s.withIssues(ctx, a), nil
+}
+
+// withIssues 把最近一次预审的逐项问题挂上。
+//
+// 只在还挂着问题的时候挂（reject_reason 非空）：通过之后再把上一次被打回的
+// 那几条发出去，界面会把已经改好的字段又标红一遍。
+//
+// 取不到就算了——逐项是锦上添花，摘要那一串已经把话说清楚了，
+// 为了标红失败让整个请求挂掉是把轻重弄反。
+func (s *Service) withIssues(ctx context.Context, a *store.MakerApp) *store.MakerApp {
+	if a == nil || a.RejectReason == "" {
+		return a
+	}
+	rs, err := s.St.MakerReviews(ctx, a.UserID, 1)
+	if err != nil || len(rs) == 0 || rs[0].IssuesJSON == "" {
+		return a
+	}
+	a.ReviewIssues = json.RawMessage(rs[0].IssuesJSON)
+	a.ReviewSource = rs[0].Source
+	a.ReviewModel = rs[0].ModelID
+	return a
 }
 
 func (s *Service) SubmitMakerApplication(ctx context.Context, userID string,
@@ -42,8 +74,14 @@ func (s *Service) SubmitMakerApplication(ctx context.Context, userID string,
 			"send the form you filled in")
 	}
 	cur, err := s.St.MakerApp(ctx, userID)
-	if err != nil {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// First submission: nothing on file yet, start from a blank one.
 		cur = &store.MakerApp{UserID: userID, Phase: "kyc"}
+	case err != nil:
+		// Anything else is a real failure. Treating it as "first submission"
+		// would quietly wipe the stage flags of an application that does exist.
+		return nil, err
 	}
 	// 身份没审过就不能提挂单配置——跳段等于让没审身份的人直接挂单。
 	if req.Phase == "listing" && !cur.KYCOk {
@@ -83,15 +121,23 @@ func (s *Service) SubmitMakerApplication(ctx context.Context, userID string,
 		case errors.Is(err, makerreview.ErrOff):
 			// 这一层关着：什么都没发生，照规则层的结论走。
 		case err != nil:
-			/* 模型挂了不是「你材料有问题」。转人工、保持不放行，
-			   而且不编一条指摘出来——这一刻出问题的是我们。
-			   （MAKER-REVIEW-AI.md §6） */
+			/* 模型读不了不是「你材料有问题」，也不该为此惊动人——绝大多数是
+			   一次抖动。材料照收（申请停在「审核中」，这句话此刻是实话：
+			   我们确实还没审完），排一次重试，由 sweep 回来重跑。
+			   连着失败到上限才转人工。 */
 			log.Printf("maker review: 模型层 %s/%s: %v", userID, req.Phase, err)
-			issues, verdict, source = r.Issues, r.Verdict, makerreview.SourceAI
-			modelID = s.Cfg.Desk.Model
+			if err := s.St.UpsertMakerApp(ctx, next); err != nil {
+				return nil, err
+			}
+			s.deferAIReview(ctx, userID, req.Phase, cur.AIAttempts, err)
+			return s.MakerApplication(ctx, userID)
 		default:
 			issues, verdict, source = r.Issues, r.Verdict, makerreview.SourceAI
 			modelID = s.Cfg.Desk.Model
+			// 跑成了就把上一次留下的重试摘掉。
+			if e := s.St.ClearAIRetry(ctx, userID); e != nil {
+				log.Printf("maker review: 清重试 %s: %v", userID, e)
+			}
 		}
 	}
 
@@ -137,7 +183,7 @@ func (s *Service) SubmitMakerApplication(ctx context.Context, userID string,
 			return nil, err
 		}
 	}
-	return s.St.MakerApp(ctx, userID)
+	return s.MakerApplication(ctx, userID)
 }
 
 // issuesJSON 把逐项问题序列化进留痕。序列化不出来也不能让提交失败。
@@ -261,4 +307,216 @@ func (s *Service) ReviewMakerApplication(ctx context.Context, reviewerID, userID
 			"stage must be kyc or listing, decision must be approve or reject, and the application must exist")
 	}
 	return s.St.MakerApp(ctx, userID)
+}
+
+// ── 模型层的重试 ────────────────────────────────────────────────────
+
+/*
+aiMaxAttempts 是连着失败几次之后转人工。
+
+为什么不无限重试：到了这个次数它已经不是一次抖动，是真出事了——密钥失效、
+额度耗尽、上游改了返回格式。那时候该有人知道，而不是让一队申请人在
+「审核中」里静静地排到天亮。
+*/
+const aiMaxAttempts = 5
+
+/*
+aiGaveUpMessage 是试满一轮之后写给申请人的那句话。
+
+它必须说明「不用你改」。技术故障和材料问题在申请人那里是两件完全不同的事：
+混成一句，他会回到表单里去改一个没有错的地方，改完再交，再被同一个故障
+挡回来——而真正出问题的是我们。
+*/
+const aiGaveUpMessage = "We could not finish the automatic check on this submission. " +
+	"A person will review it — there is nothing for you to change."
+
+// aiBackoff 是第 n 次失败之后等多久再试：30s、1m、2m、4m、8m 封顶。
+func aiBackoff(attempts int) time.Duration {
+	d := 30 * time.Second
+	for i := 0; i < attempts && d < 8*time.Minute; i++ {
+		d *= 2
+	}
+	return d
+}
+
+// deferAIReview 排一次重试；已经试到上限就转人工。
+func (s *Service) deferAIReview(ctx context.Context, userID, stage string, attempts int, cause error) {
+	if attempts+1 >= aiMaxAttempts {
+		log.Printf("maker review: %s/%s 连续 %d 次跑不成，转人工：%v",
+			userID, stage, attempts+1, cause)
+		if err := s.St.ClearAIRetry(ctx, userID); err != nil {
+			log.Printf("maker review: 清重试 %s: %v", userID, err)
+		}
+		/* 转人工也不编一条指摘：这一刻出问题的是我们，不是他的材料。
+		   说清楚「没能自动审完，有人会看」，比让他去改一个没有错的地方诚实。 */
+		if err := s.St.ReviewMakerApp(ctx, userID, stage, "reject",
+			aiGaveUpMessage, ""); err != nil {
+			log.Printf("maker review: 转人工 %s: %v", userID, err)
+		}
+		return
+	}
+	if err := s.St.ScheduleAIRetry(ctx, userID, time.Now().Add(aiBackoff(attempts))); err != nil {
+		log.Printf("maker review: 排重试 %s: %v", userID, err)
+	}
+}
+
+// SweepAIRetries 重跑那些模型层没跑成的。由调度器每秒调一次。
+//
+// 一份失败不能挡住其它份——记下来接着走，跟另外两条 sweep 一个规矩。
+func (s *Service) SweepAIRetries(ctx context.Context, now time.Time) error {
+	if s.MakerAI == nil {
+		return nil
+	}
+	due, err := s.St.DueAIRetries(ctx, now)
+	if err != nil {
+		return err
+	}
+	for _, a := range due {
+		stage := ""
+		switch {
+		case a.KYCDone && !a.KYCOk:
+			stage = "kyc"
+		case a.ListingDone && !a.Approved:
+			stage = "listing"
+		}
+		form := stageForm(a.FormJSON, stage)
+		if stage == "" || len(form) == 0 {
+			// 已经有结论了（人点过，或者换了阶段），重试没有对象。
+			if err := s.St.ClearAIRetry(ctx, a.UserID); err != nil {
+				log.Printf("maker review: 清重试 %s: %v", a.UserID, err)
+			}
+			continue
+		}
+		t0 := time.Now()
+		r, err := s.MakerAI.Review(ctx, stage, form)
+		if errors.Is(err, makerreview.ErrOff) {
+			/* Nothing for the model to do on this stage (or the layer was
+			   switched off since it was queued). Drop it from the queue —
+			   retrying would grind to the attempt limit and then wake a
+			   person for something that was never going to run. */
+			if err := s.St.ClearAIRetry(ctx, a.UserID); err != nil {
+				log.Printf("maker review: clear retry %s: %v", a.UserID, err)
+			}
+			continue
+		}
+		if err != nil {
+			s.deferAIReview(ctx, a.UserID, stage, a.AIAttempts, err)
+			continue
+		}
+		if err := s.St.ClearAIRetry(ctx, a.UserID); err != nil {
+			log.Printf("maker review: 清重试 %s: %v", a.UserID, err)
+		}
+		if err := s.St.InsertMakerReview(ctx, store.MakerReview{
+			UserID: a.UserID, Stage: stage,
+			Source: makerreview.SourceAI, Verdict: string(r.Verdict),
+			IssuesJSON: issuesJSON(r.Issues), InputHash: store.HashInput(form),
+			ModelID: s.Cfg.Desk.Model, LatencyMs: int(time.Since(t0).Milliseconds()),
+		}); err != nil {
+			log.Printf("maker review: 留痕 %s/%s: %v", a.UserID, stage, err)
+		}
+		if r.Verdict == makerreview.Pass {
+			// 通过了就走提交那条路：上闹钟（演示档）或什么都不做（生产档）。
+			if d := s.Cfg.T.MakerReview; d > 0 {
+				if err := s.St.SetMakerAutoReview(ctx, a.UserID, time.Now().Add(d)); err != nil {
+					log.Printf("maker review: 上闹钟 %s: %v", a.UserID, err)
+				}
+			}
+			continue
+		}
+		if err := s.St.ReviewMakerApp(ctx, a.UserID, stage, "reject",
+			makerreview.Summary(r.Issues), ""); err != nil {
+			log.Printf("maker review: 落裁决 %s: %v", a.UserID, err)
+		}
+	}
+	return nil
+}
+
+// stageForm 从合起来存的那份里取出某一段。取不到就返回空。
+func stageForm(raw, stage string) json.RawMessage {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil
+	}
+	return m[stage]
+}
+
+// ── 申诉 ────────────────────────────────────────────────────────────
+
+// MakerAppealReq 是申请人对预审结论的异议。
+type MakerAppealReq struct {
+	// Note 是他的申辩。必填——空着的申诉在人工那头没有任何可读的东西，
+	// 等于只是把同一份材料再排一次队。
+	Note string `json:"note"`
+}
+
+/*
+AppealMakerApplication 收下一次申诉，把这份申请转给人。
+
+为什么必须有这条路：预审判错了而没有任何路径能推翻它，这个商户就被永久
+锁在门外——他改也没用，因为他本来就没错。这不是流程问题，是系统里必须
+存在一个能推翻机器的出口。它可以一个月零次，但不能不存在。
+
+**申诉不重跑模型。** 同一份材料再问一次多半得到同一个答案，那只会让人
+以为自己被敷衍了。申辩是新的信息，而读懂一段申辩、决定要不要采信，
+正是我们一开始就没交给模型的那类判断。
+*/
+func (s *Service) AppealMakerApplication(ctx context.Context, userID string,
+	req MakerAppealReq) (*store.MakerApp, error) {
+	note := strings.TrimSpace(req.Note)
+	if note == "" {
+		return nil, httpx.Fail(http.StatusUnprocessableEntity, "NOTE_REQUIRED", "note",
+			"tell us what you think we got wrong — without it there is nothing for a person to read")
+	}
+	if len(note) > 2000 {
+		note = note[:2000]
+	}
+	cur, err := s.St.MakerApp(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, httpx.NotFound("application")
+	}
+	if err != nil {
+		return nil, err
+	}
+	// 没被打回的没什么可申诉。放过去的话，队列里会混进一批没有对象的条目。
+	stage := ""
+	switch {
+	case cur.KYCDone && !cur.KYCOk:
+		stage = "kyc"
+	case cur.ListingDone && !cur.Approved:
+		stage = "listing"
+	}
+	if stage == "" || cur.RejectReason == "" {
+		return nil, httpx.Fail(http.StatusConflict, "NOTHING_TO_APPEAL", "",
+			"there is no decision on this application to appeal")
+	}
+
+	/* 申辩连同它针对的那个结论一起留痕。
+	   人来看的时候要能同时读到两样：我们当时说了什么，他说我们哪里错了。
+	   只存申辩的话，看的人还得自己去翻上一行。 */
+	if err := s.St.InsertMakerReview(ctx, store.MakerReview{
+		UserID: userID, Stage: stage,
+		Source: makerreview.SourceHuman, Verdict: string(makerreview.Escalate),
+		IssuesJSON: issuesJSON([]makerreview.Issue{{
+			Fields: []string{"*"},
+			Says:   "The applicant disagrees with the decision: " + note,
+			Ask:    "Needs a person to look at it.",
+			Route:  makerreview.ToEscalate,
+		}}),
+	}); err != nil {
+		log.Printf("maker appeal: 留痕 %s/%s: %v", userID, stage, err)
+	}
+
+	/* 排进人工队列：清掉自动放行的闹钟，免得钟在人看之前先把它放了。
+	   申请状态不动——它仍然是「被打回、等处理」，只是现在多了一个人在等
+	   着看。骗他说「已通过」比不理他更糟。 */
+	if err := s.St.ClearMakerAutoReview(ctx, userID); err != nil {
+		log.Printf("maker appeal: 清闹钟 %s: %v", userID, err)
+	}
+	if err := s.St.ClearAIRetry(ctx, userID); err != nil {
+		log.Printf("maker appeal: 清重试 %s: %v", userID, err)
+	}
+	if err := s.St.MarkMakerAppealed(ctx, userID, note); err != nil {
+		return nil, err
+	}
+	return s.MakerApplication(ctx, userID)
 }

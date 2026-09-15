@@ -1,10 +1,10 @@
-// 管理后台的跨用户读模型。
+// Admin console cross-user read models.
 //
-// 这些查询和产品侧的 Orders / Offers 不同：产品侧按 actor 过滤（「只看我的」），
-// 后台是运营视角，跨所有用户看全量。所以单独一组方法，不复用带 owner 过滤的那套——
-// 混用的话迟早有人把后台的无过滤查询接到用户端，把别人的单也列出来。
+// These queries differ from the product-side Orders / Offers: the product side filters by actor
+// ("only mine"). The console is an operator view, spanning all users. Hence a separate set of methods
+// that do not reuse the owner-filtered ones — mixing them risks wiring an unfiltered console query into the user side.
 //
-// 只读：后台的写动作（审核、将来的裁决）各有专门方法，不走这里。
+// Read-only: the console's write actions (review, dispute resolution, ...) have their own methods, not here.
 package store
 
 import (
@@ -13,22 +13,22 @@ import (
 	"encoding/json"
 )
 
-// AdminCounts 是概览页顶部那排数字。
+// AdminCounts is the row of numbers at the top of the overview page.
 type AdminCounts struct {
 	Users          int `json:"users"`
 	Merchants      int `json:"merchants"`
 	OffersActive   int `json:"offers_active"`
 	Orders         int `json:"orders"`
-	OrdersOpen     int `json:"orders_open"`     // 还没到终态的
-	OrdersDisputed int `json:"orders_disputed"` // terminal=disputed，资金锁定待裁决
+	OrdersOpen     int `json:"orders_open"`     // not yet terminal
+	OrdersDisputed int `json:"orders_disputed"` // terminal=disputed, funds locked pending resolution
 	Withdrawals    int `json:"withdrawals"`
-	PendingReviews int `json:"pending_reviews"` // 待审的准入申请（两段合计）
-	KycReview      int `json:"kyc_review"`      // 待人工复核的身份核验
+	PendingReviews int `json:"pending_reviews"` // pending maker applications
+	KycReview      int `json:"kyc_review"`      // KYC checks awaiting human review
 }
 
 func (s *Store) AdminCounts(ctx context.Context) (AdminCounts, error) {
 	var c AdminCounts
-	// 一行一个数，简单直接。量级是演示库，不值得为一次概览拼一条大 SQL。
+	// One number per query, plain and simple. It's a demo-scale DB; not worth a single big SQL for one overview.
 	q := func(sql string, args ...any) (int, error) {
 		var n int
 		err := s.db.QueryRowContext(ctx, sql, args...).Scan(&n)
@@ -56,20 +56,20 @@ func (s *Store) AdminCounts(ctx context.Context) (AdminCounts, error) {
 	if c.Withdrawals, err = q(`select count(*) from withdrawals`); err != nil {
 		return c, err
 	}
-	// 待审：kyc 段交了没过，或 listing 段交了没过——和 PendingMakerApps 同口径。
+	// Pending: count only the listing-config stage -- identity belongs to the KYC module, not maker review. Same rule as PendingMakerApps.
 	if c.PendingReviews, err = q(
 		`select count(*) from maker_applications
-		  where (kyc_done=1 and kyc_ok=0) or (listing_done=1 and approved=0)`); err != nil {
+		  where listing_done=1 and approved=0`); err != nil {
 		return c, err
 	}
-	// KYC 待人工复核。这张表可能还没建（老库没接身份核验），查不到当 0。
+	// KYC awaiting human review. The table may not exist yet (old DBs without KYC) -- treat a query error as 0.
 	if c.KycReview, err = q(`select count(*) from kyc_verifications where status='review'`); err != nil {
 		c.KycReview = 0
 	}
 	return c, nil
 }
 
-// AdminOrderRow 是后台订单列表的一行。带上双方展示名——运营看 id 认不出人。
+// AdminOrderRow is one row of the console order list. It carries both display names -- operators can't recognize ids.
 type AdminOrderRow struct {
 	ID           string `json:"id"`
 	Ref          string `json:"ref"`
@@ -112,11 +112,11 @@ func (s *Store) AdminOrders(ctx context.Context, limit int) ([]AdminOrderRow, er
 	return out, rows.Err()
 }
 
-// AdminWithdrawalRow 是后台提现列表的一行。
+// AdminWithdrawalRow is one row of the console withdrawal list.
 //
-// 注意 broadcast 态：这一版 BroadcastWithdrawal 只收一个 tx_hash 字符串、
-// 不去链上核实。后台把 tx_hash 原样列出来，运营能自己去区块浏览器对，
-// 但系统没有替它背书——这一点在真接链核之前必须让看的人知道。
+// Note the broadcast state: this version's BroadcastWithdrawal only takes a tx_hash string and
+// does not verify it on chain. The console lists the tx_hash as-is so operators can check the explorer,
+// but the system does not vouch for it -- the viewer must know this until real on-chain verification lands.
 type AdminWithdrawalRow struct {
 	ID          string `json:"id"`
 	Owner       string `json:"owner"`
@@ -157,11 +157,11 @@ func (s *Store) AdminWithdrawals(ctx context.Context, limit int) ([]AdminWithdra
 	return out, rows.Err()
 }
 
-// ── 后台写动作 ──
+// -- Console write actions --
 
-// AdminForceDelist 强制下架一条挂单。只改状态，不动链上锁仓——链上解锁认
-// maker 私钥，平台签不了。所以币仍锁在托管里，需 maker 自己去取回；这里
-// 只是让它不再对买家可见。只对 active 的挂单有意义。
+// AdminForceDelist force-delists an offer. It only changes status, not the on-chain lock -- unlocking on chain
+// requires the maker's key, which the platform doesn't have. So the coins stay in escrow and the maker
+// must reclaim them; this just hides the offer from buyers. Only meaningful for active offers.
 func (s *Store) AdminForceDelist(ctx context.Context, offerID string) error {
 	res, err := s.db.ExecContext(ctx,
 		`update offers set status='delisted', updated_at=?
@@ -171,17 +171,17 @@ func (s *Store) AdminForceDelist(ctx context.Context, offerID string) error {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return sql.ErrNoRows // 不存在，或已经不是 active
+		return sql.ErrNoRows // does not exist, or is no longer active
 	}
 	return nil
 }
 
-// AdminReviewValues 是提现复核允许的取值。空串表示撤销标记。
+// AdminReviewValues are the allowed withdrawal-review values. Empty string clears the flag.
 var AdminReviewValues = map[string]bool{"": true, "suspicious": true, "held": true, "cleared": true}
 
-// AdminSetWithdrawalReview 打/撤提现的复核标记。这是运营批注，不改资金状态——
-// 真正拦截一笔链上转账平台做不到（非托管，币不在我们手里），标记只是给
-// 运营和风控留个记号。
+// AdminSetWithdrawalReview sets/clears a withdrawal review flag. It's an operator annotation, not a fund state --
+// the platform cannot actually stop an on-chain transfer (non-custodial, the coins aren't ours); the flag is just
+// a marker for operations and risk.
 func (s *Store) AdminSetWithdrawalReview(ctx context.Context, id, flag string) error {
 	if !AdminReviewValues[flag] {
 		return sql.ErrNoRows
@@ -198,7 +198,7 @@ func (s *Store) AdminSetWithdrawalReview(ctx context.Context, id, flag string) e
 	return nil
 }
 
-// AdminOfferRow 是后台挂单列表的一行。
+// AdminOfferRow is one row of the console offer list.
 type AdminOfferRow struct {
 	ID        string `json:"id"`
 	Maker     string `json:"maker"`
@@ -238,10 +238,10 @@ func (s *Store) AdminOffers(ctx context.Context, limit int) ([]AdminOfferRow, er
 	return out, rows.Err()
 }
 
-// ── 用户 / 商户 ──
+// -- Users / merchants --
 
-// AdminUserRow 是用户列表的一行。带上「是不是商户」「做市有没有过审」，
-// 让运营一眼看出这是普通用户还是做市方。
+// AdminUserRow is one row of the user list. It carries "is a merchant" and "maker approved" so operators
+// can tell an ordinary user from a market maker at a glance.
 type AdminUserRow struct {
 	ID            string `json:"id"`
 	DisplayName   string `json:"display_name"`
@@ -249,7 +249,7 @@ type AdminUserRow struct {
 	Kind          string `json:"kind"`
 	Role          string `json:"role"`
 	LoginMethod   string `json:"login_method"` // passkey | wallet | google | twitter | email
-	WalletKind    string `json:"wallet_kind"`  // atara（自建）| ext（外部钱包）
+	WalletKind    string `json:"wallet_kind"`  // atara (self-custody) | ext (external wallet)
 	IsMerchant    bool   `json:"is_merchant"`
 	MakerApproved bool   `json:"maker_approved"`
 	Banned        bool   `json:"banned"`
@@ -289,7 +289,7 @@ func (s *Store) AdminUsers(ctx context.Context, limit int) ([]AdminUserRow, erro
 	return out, rows.Err()
 }
 
-// AdminMerchant 是商户画像（有才带）。字段对齐 merchant_profiles。
+// AdminMerchant is the merchant profile (present only if any). Fields mirror merchant_profiles.
 type AdminMerchant struct {
 	PeerCode      string `json:"peer_code"`
 	TrustScore    int    `json:"trust_score"`
@@ -300,8 +300,8 @@ type AdminMerchant struct {
 	Docs          string `json:"docs"`
 }
 
-// AdminUserDetail 是单个主体的全貌：资料 + 商户画像 + 准入申请 + 其挂单/订单/提现。
-// 纯读聚合，给详情页用。任一子查询失败即整体失败——半份画像比报错更容易误导。
+// AdminUserDetail is one subject in full: profile + merchant profile + maker application + their offers/orders/withdrawals.
+// A read-only aggregate for the detail page. Any sub-query failure fails the whole -- half a profile misleads more than an error.
 type AdminUserDetail struct {
 	User        AdminUserRow         `json:"user"`
 	Email       string               `json:"email"`
@@ -315,7 +315,7 @@ type AdminUserDetail struct {
 
 func (s *Store) AdminUserDetail(ctx context.Context, userID string) (*AdminUserDetail, error) {
 	var d AdminUserDetail
-	// 资料
+	// Profile
 	err := s.db.QueryRowContext(ctx,
 		`select u.id, u.display_name, u.address, u.kind, u.role, u.email,
 		        coalesce(u.login_method,''), coalesce(u.wallet_kind,''),
@@ -330,7 +330,7 @@ func (s *Store) AdminUserDetail(ctx context.Context, userID string) (*AdminUserD
 	if err != nil {
 		return nil, err
 	}
-	// 商户画像（可空）
+	// Merchant profile (optional)
 	var m AdminMerchant
 	err = s.db.QueryRowContext(ctx,
 		`select peer_code, trust_score, deals, disputes, fill_rate, median_release_secs, docs
@@ -341,16 +341,16 @@ func (s *Store) AdminUserDetail(ctx context.Context, userID string) (*AdminUserD
 	} else if err != sql.ErrNoRows {
 		return nil, err
 	}
-	// 准入申请（可空）
+	// Maker application (optional)
 	if app, err := s.MakerApp(ctx, userID); err == nil {
 		d.Application = app
 	}
-	// KYC 最近一次核验（可空）。失败不阻断整个详情——身份核验模块没配或没记录
-	// 时，用户详情照样要能看。
+	// Latest KYC check (optional). A failure must not break the whole detail -- the user detail must render
+	// even when the KYC module isn't configured or has no record.
 	if kyc, err := s.AdminKycForUser(ctx, userID); err == nil {
 		d.Kyc = kyc
 	}
-	// 其挂单 / 订单（作为任一方）/ 提现
+	// Their offers / orders (as either party) / withdrawals
 	if d.Offers, err = s.adminOffersBy(ctx, userID); err != nil {
 		return nil, err
 	}
@@ -433,10 +433,10 @@ func (s *Store) adminWithdrawalsBy(ctx context.Context, userID string) ([]AdminW
 	return out, rows.Err()
 }
 
-// ── 审计留痕 ──
+// -- Audit trail --
 
-// LogAudit 记一条后台操作。append-only，失败不回滚业务动作——审计缺一条
-// 比让已经成功的下架/审核回滚要轻。调用方在业务动作成功后调它。
+// LogAudit records one console action. Append-only; a failure does not roll back the business action --
+// a missing audit row is lighter than rolling back a delist/review that already succeeded. Called after the action succeeds.
 func (s *Store) LogAudit(ctx context.Context, actorID, action, targetType, targetID, detail string) error {
 	_, err := s.db.ExecContext(ctx,
 		`insert into admin_audit(actor_id,action,target_type,target_id,detail,created_at)
@@ -445,7 +445,7 @@ func (s *Store) LogAudit(ctx context.Context, actorID, action, targetType, targe
 	return err
 }
 
-// AdminAuditRow 是审计列表的一行，带上执行人展示名。
+// AdminAuditRow is one row of the audit list, with the actor's display name.
 type AdminAuditRow struct {
 	ID         int64  `json:"id"`
 	Actor      string `json:"actor"`
@@ -484,9 +484,9 @@ func (s *Store) AdminAudit(ctx context.Context, limit int) ([]AdminAuditRow, err
 	return out, rows.Err()
 }
 
-// ── 用户干预 ──
+// -- User intervention --
 
-// AdminSetUserBanned 封禁/解封账户。被封的账户在 auth 中间层被挡下。
+// AdminSetUserBanned bans/unbans an account. Banned accounts are blocked in the auth middleware.
 func (s *Store) AdminSetUserBanned(ctx context.Context, userID string, banned bool) error {
 	v := 0
 	if banned {
@@ -503,9 +503,9 @@ func (s *Store) AdminSetUserBanned(ctx context.Context, userID string, banned bo
 	return nil
 }
 
-// AdminRevokeMaker 撤销做市资格：把 approved 置 0，之后就挂不了新单
-// （MakerApproved 每次查库，立刻生效）。已挂出的单不动——要下架另走强制下架。
-// 只对当前 approved=1 的申请有意义。
+// AdminRevokeMaker revokes maker approval: sets approved to 0, so no new offers can be posted
+// (MakerApproved queries the DB each time, so it takes effect immediately). Existing offers are untouched -- force-delist those separately.
+// Only meaningful for an application currently at approved=1.
 func (s *Store) AdminRevokeMaker(ctx context.Context, userID string) error {
 	res, err := s.db.ExecContext(ctx,
 		`update maker_applications set approved=0, updated_at=? where user_id=? and approved=1`,
@@ -515,12 +515,12 @@ func (s *Store) AdminRevokeMaker(ctx context.Context, userID string) error {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return sql.ErrNoRows // 没有申请，或本就不是已过审
+		return sql.ErrNoRows // no application, or it wasn't approved to begin with
 	}
 	return nil
 }
 
-// IsBanned 供 auth 中间层每请求查一次。单列查询，走 users 主键，很轻。
+// IsBanned is queried once per request by the auth middleware. A single-column lookup on the users primary key -- very cheap.
 func (s *Store) IsBanned(ctx context.Context, userID string) bool {
 	var banned bool
 	err := s.db.QueryRowContext(ctx,
@@ -528,9 +528,9 @@ func (s *Store) IsBanned(ctx context.Context, userID string) bool {
 	return err == nil && banned
 }
 
-// ── 趋势 ──
+// -- Trends --
 
-// AdminTrendPoint 是趋势图上的一天。
+// AdminTrendPoint is one day on the trend chart.
 type AdminTrendPoint struct {
 	Date        string `json:"date"` // YYYY-MM-DD
 	Users       int    `json:"users"`
@@ -539,13 +539,13 @@ type AdminTrendPoint struct {
 	Withdrawals int    `json:"withdrawals"`
 }
 
-// AdminTrends 返回最近 days 天、按天分桶的新增计数。created_at 存的是 RFC3339
-// 文本，substr 取前 10 位就是日期。缺数据的天补 0，保证 x 轴连续。
+// AdminTrends returns per-day new-item counts for the last `days` days. created_at is stored as RFC3339
+// text, so substr of the first 10 chars is the date. Empty days are filled with 0 to keep the x-axis continuous.
 func (s *Store) AdminTrends(ctx context.Context, days int) ([]AdminTrendPoint, error) {
 	if days <= 0 || days > 180 {
 		days = 30
 	}
-	// 起点：今天往前 days-1 天的零点（按 UTC 日期算，和 created_at 同口径）。
+	// Start: midnight days-1 days back (UTC date, same basis as created_at).
 	start := Now().AddDate(0, 0, -(days - 1)).Format("2006-01-02")
 
 	daily := func(table string) (map[string]int, error) {
@@ -567,7 +567,7 @@ func (s *Store) AdminTrends(ctx context.Context, days int) ([]AdminTrendPoint, e
 		}
 		return m, rows.Err()
 	}
-	// table 名是本函数内写死的常量，不来自外部输入，拼进 SQL 安全。
+	// The table name is a constant hardcoded in this function, not external input, so interpolating it into SQL is safe.
 	users, err := daily("users")
 	if err != nil {
 		return nil, err
@@ -595,8 +595,8 @@ func (s *Store) AdminTrends(ctx context.Context, days int) ([]AdminTrendPoint, e
 	return out, nil
 }
 
-// AdminWithdrawalTx 取一笔提现的 tx_hash（供后台链上核验用）。第二个返回值
-// 表示这笔提现是否存在。
+// AdminWithdrawalTx fetches a withdrawal's tx_hash (for on-chain verification). The second return value
+// says whether the withdrawal exists.
 func (s *Store) AdminWithdrawalTx(ctx context.Context, id string) (string, bool) {
 	var tx string
 	err := s.db.QueryRowContext(ctx,
@@ -607,12 +607,12 @@ func (s *Store) AdminWithdrawalTx(ctx context.Context, id string) (string, bool)
 	return tx, true
 }
 
-// ── KYC（身份核验）只读读模型 ──
+// -- KYC (identity verification) read-only models --
 //
-// 身份核验走 ID Analyzer 的 DocuPass。accept 自动放行、reject 拒绝，
-// review 是「要人看一眼」——那一档目前没人接，后台要能看见它。
-// 这里只读：identity/warnings 原样以 JSON 交给前端渲染，人工放行/驳回
-// 是另一组写方法（待与后端口径对齐后再加），不在这里。
+// Identity verification runs on ID Analyzer's DocuPass. accept auto-clears, reject denies,
+// review means "needs a human to look" -- no one handles that today, and the console must be able to see it.
+// Read-only here: identity/warnings are passed to the frontend as JSON as-is; manual approve/reject
+// is a separate set of write methods (to be added once aligned with the backend), not here.
 
 type AdminKycRow struct {
 	Reference   string `json:"reference"`
@@ -626,7 +626,7 @@ type AdminKycRow struct {
 	ConcludedAt string `json:"concluded_at"`
 }
 
-// AdminKycList 列出核验记录。status 非空时按状态筛（后台默认先看 review）。
+// AdminKycList lists checks. When status is non-empty it filters by status (the console defaults to review first).
 func (s *Store) AdminKycList(ctx context.Context, status string, limit int) ([]AdminKycRow, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
@@ -660,8 +660,8 @@ func (s *Store) AdminKycList(ctx context.Context, status string, limit int) ([]A
 	return out, rows.Err()
 }
 
-// AdminKycDetail 是单次核验的全貌：行数据 + 证件字段 + 风险警告。
-// identity/warnings 原样透传（已由 kyc 层打好码），前端自己渲染。
+// AdminKycDetail is one check in full: row data + document fields + risk warnings.
+// identity/warnings pass through as-is (already masked by the kyc layer); the frontend renders them.
 type AdminKycDetail struct {
 	AdminKycRow
 	LastEvent string          `json:"last_event"`
@@ -669,7 +669,7 @@ type AdminKycDetail struct {
 	Warnings  json.RawMessage `json:"warnings,omitempty"`
 }
 
-// AdminKycForUser 取一个用户最近一次核验的详情。没有则返回 nil, nil。
+// AdminKycForUser fetches a user's latest check detail. Returns nil, nil if none.
 func (s *Store) AdminKycForUser(ctx context.Context, userID string) (*AdminKycDetail, error) {
 	k, err := s.LatestKycCheck(ctx, userID)
 	if err != nil {
@@ -681,7 +681,7 @@ func (s *Store) AdminKycForUser(ctx context.Context, userID string) (*AdminKycDe
 	return kycDetailFromCheck(k), nil
 }
 
-// AdminKycByReference 按 reference 取单次核验详情。
+// AdminKycByReference fetches one check detail by reference.
 func (s *Store) AdminKycByReference(ctx context.Context, reference string) (*AdminKycDetail, error) {
 	k, err := s.KycCheck(ctx, reference)
 	if err != nil {
@@ -702,8 +702,8 @@ func kycDetailFromCheck(k *KycCheck) *AdminKycDetail {
 	if k.ConcludedAt != nil {
 		d.ConcludedAt = ts(*k.ConcludedAt)
 	}
-	// identity_json/warnings_json 存的就是 JSON 文本，合法就原样透传，
-	// 空或非法就留空——宁可少显示，不给前端塞坏 JSON。
+	// identity_json/warnings_json are stored as JSON text; if valid, pass through as-is,
+	// otherwise leave empty -- better to show less than to feed the frontend broken JSON.
 	if json.Valid([]byte(k.IdentityJSON)) && k.IdentityJSON != "" {
 		d.Identity = json.RawMessage(k.IdentityJSON)
 	}
@@ -713,12 +713,12 @@ func kycDetailFromCheck(k *KycCheck) *AdminKycDetail {
 	return d
 }
 
-// ── AI 助手（调用日志 + 对话查看）只读 ──
+// -- AI assistant (call log + conversation viewer) read-only --
 
-// LogAiCall 记一次 AI 调用。在 app 层每次调完模型后调用（成功失败都记）。
-// 失败只记 log、不影响主流程——运维日志缺一条比让用户那次对话失败要轻。
-// AiCallLog 是一次 AI 调用要记的全部指标。字段多，用结构体传，免得调用处
-// 排一长串位置参数。
+// LogAiCall records one AI call. Called in the app layer after each model call (success or failure).
+// A failure only logs and does not affect the main flow -- a missing ops log row is lighter than failing the user's chat.
+// AiCallLog is everything to record for one AI call. Many fields, so passed as a struct to avoid a long
+// list of positional args at the call site.
 type AiCallLog struct {
 	UserID           string
 	Model            string
@@ -730,7 +730,7 @@ type AiCallLog struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
-	CostMicros       int // 估算成本，微美元
+	CostMicros       int // estimated cost, in micro-USD
 }
 
 func (s *Store) LogAiCall(ctx context.Context, c AiCallLog) error {
@@ -747,7 +747,7 @@ func (s *Store) LogAiCall(ctx context.Context, c AiCallLog) error {
 	return err
 }
 
-// AdminAiStats 是 AI 调用的聚合概览。
+// AdminAiStats is the aggregate overview of AI calls.
 type AdminAiStats struct {
 	Total       int     `json:"total"`
 	Ok          int     `json:"ok"`
@@ -831,7 +831,7 @@ func (s *Store) AdminAiCalls(ctx context.Context, limit int) ([]AdminAiCallRow, 
 	return out, rows.Err()
 }
 
-// AdminAiConvRow 是「谁跟 AI 聊过」的一行。desk 对话就是 messages 里 peer=DeskID 的那些。
+// AdminAiConvRow is one row of "who has chatted with the AI". Desk conversations are the messages with peer=DeskID.
 type AdminAiConvRow struct {
 	UserID   string `json:"user_id"`
 	User     string `json:"user"`
@@ -866,14 +866,14 @@ func (s *Store) AdminAiConversations(ctx context.Context, deskID string, limit i
 	return out, rows.Err()
 }
 
-// AdminAiMsg 是 AI 会话里的一条。role: user | assistant。
+// AdminAiMsg is one message in an AI conversation. role: user | assistant.
 type AdminAiMsg struct {
 	Role      string `json:"role"`
 	Body      string `json:"body"`
 	CreatedAt string `json:"created_at"`
 }
 
-// AdminAiThread 读某个用户跟 AI 的整段对话。author='me' 是用户，其它是 AI。
+// AdminAiThread reads a user's full conversation with the AI. author='me' is the user, otherwise the AI.
 func (s *Store) AdminAiThread(ctx context.Context, deskID, userID string) ([]AdminAiMsg, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`select author, body, created_at from messages
@@ -898,9 +898,9 @@ func (s *Store) AdminAiThread(ctx context.Context, deskID, userID string) ([]Adm
 	return out, rows.Err()
 }
 
-// ── 后台可调设置（键值）──
+// -- Console-adjustable settings (key/value) --
 
-// GetSetting 读一个设置值。查不到返回空串（调用方回落默认）。
+// GetSetting reads a setting value. Returns empty string if absent (the caller falls back to a default).
 func (s *Store) GetSetting(ctx context.Context, key string) (string, error) {
 	var v string
 	err := s.db.QueryRowContext(ctx, `select value from app_settings where key=?`, key).Scan(&v)
@@ -910,7 +910,7 @@ func (s *Store) GetSetting(ctx context.Context, key string) (string, error) {
 	return v, err
 }
 
-// SetSetting 写一个设置值，记下是谁改的。
+// SetSetting writes a setting value, recording who changed it.
 func (s *Store) SetSetting(ctx context.Context, key, value, updatedBy string) error {
 	_, err := s.db.ExecContext(ctx,
 		`insert into app_settings(key,value,updated_by,updated_at) values(?,?,?,?)
@@ -920,13 +920,13 @@ func (s *Store) SetSetting(ctx context.Context, key, value, updatedBy string) er
 	return err
 }
 
-// DeleteSetting 删一个设置（用于「恢复默认」）。
+// DeleteSetting removes a setting (used by "reset to default").
 func (s *Store) DeleteSetting(ctx context.Context, key string) error {
 	_, err := s.db.ExecContext(ctx, `delete from app_settings where key=?`, key)
 	return err
 }
 
-// ── 订单详情 ──
+// -- Order detail --
 
 type AdminOrderEvent struct {
 	Seq       int               `json:"seq"`
@@ -978,9 +978,9 @@ type AdminOrderCond struct {
 	FallbackDays int    `json:"fallback_days"`
 }
 
-// AdminOrderDetail 拼一笔订单的全貌：本体 + 双方名字 + 事件时间线。争议案卷
-// 就在事件的 payload 里（Dispute 那一步存了 kind/details/file_ref），所以带上
-// 事件流就看得到争议内容，不用另开一张表。
+// AdminOrderDetail assembles one order in full: the order + both party names + event timeline. The dispute case
+// lives in the event payload (the Dispute step stored kind/details/file_ref), so including the event
+// stream shows the dispute content -- no separate table needed.
 func (s *Store) AdminOrderDetail(ctx context.Context, id string) (*AdminOrderDetail, error) {
 	o, err := s.Order(ctx, id)
 	if err != nil {

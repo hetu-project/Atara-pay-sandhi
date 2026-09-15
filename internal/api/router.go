@@ -30,6 +30,7 @@ func (h *Handler) Router() http.Handler {
 		r.Route("/catalog", func(r chi.Router) {
 			r.Get("/assets", h.Assets)
 			r.Get("/fiats", h.Fiats)
+			r.Get("/rails", h.Rails)
 			r.Get("/chain", h.Chain)
 			r.Get("/conditions", h.Conditions)
 			r.Get("/intents", h.Intents)
@@ -89,45 +90,58 @@ func (h *Handler) Router() http.Handler {
 		// Maker 申请：两段提交，审核是真人动作
 		r.Get("/maker/application", h.MakerApplication)
 		r.Post("/maker/application", h.SubmitMakerApplication)
+		r.Post("/maker/application/appeal", h.AppealMakerApplication)
 
-		// 管理后台。审核不算 agent 共识，所以整组挡在 reviewer 角色后面，
-		// 系统不自动放行。概览与列表是只读运营视角，跨全体用户。
+		// 管理后台。独立身份系统：账号密码登录换会话 token，之后 Bearer 认证。
+		// 登录是公开的；其余全挡在 RequireAdmin 后面（不再是可伪造的 X-Atara-User）。
 		r.Route("/admin", func(r chi.Router) {
-			r.Use(auth.RequireRole("reviewer"))
-			r.Route("/maker", func(r chi.Router) {
-				r.Get("/applications", h.PendingMakerApplications)
-				r.Get("/reviewed", h.ReviewedMakerApplications)
-				r.Post("/applications/{user_id}/review", h.ReviewMakerApplication)
+			r.Post("/login", h.AdminLogin) // 公开
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireAdmin(h.St.AdminActorByToken))
+				r.Post("/logout", h.AdminLogout)
+				r.Get("/me", h.AdminMe)
+				// Admin account management
+				r.Get("/admins", h.AdminListAdmins)
+				r.Post("/admins", h.AdminCreateAdmin)
+				r.Post("/admins/{id}/password", h.AdminResetPassword)
+				r.Post("/admins/{id}/disable", h.AdminSetDisabled)
+				r.Post("/change-password", h.AdminChangePassword)
+				r.Route("/maker", func(r chi.Router) {
+					r.Get("/applications", h.PendingMakerApplications)
+					r.Get("/reviewed", h.ReviewedMakerApplications)
+					r.Post("/applications/{user_id}/review", h.ReviewMakerApplication)
+				})
+				// 状态看板的读模型
+				r.Get("/overview", h.AdminOverview)
+				r.Get("/trends", h.AdminTrends)
+				r.Get("/orders", h.AdminOrders)
+				r.Get("/orders/{id}", h.AdminOrderDetail)
+				r.Post("/orders/{id}/resolve", h.AdminResolveDispute)
+				r.Get("/withdrawals", h.AdminWithdrawals)
+				r.Get("/offers", h.AdminOffers)
+				// 用户 / 商户
+				r.Get("/users", h.AdminUsers)
+				r.Get("/users/{id}", h.AdminUserDetail)
+				r.Post("/users/{id}/ban", h.AdminBanUser)
+				r.Post("/users/{id}/revoke-maker", h.AdminRevokeMaker)
+				// 写动作：强制下架挂单（币留锁定）、提现复核标记
+				r.Post("/offers/{id}/delist", h.AdminForceDelist)
+				r.Post("/withdrawals/{id}/review", h.AdminReviewWithdrawal)
+				r.Post("/withdrawals/{id}/verify", h.AdminVerifyWithdrawal)
+				// 身份核验（只读）：列表 + 单次详情。人工放行/驳回待与后端口径对齐后再加。
+				r.Get("/kyc", h.AdminKycList)
+				r.Get("/kyc/{reference}", h.AdminKycDetail)
+				// AI 助手：调用日志 + 对话查看（只读）+ 提示词（人设可改、护栏锁死）
+				r.Get("/ai/prompt", h.AdminAiPrompt)
+				r.Post("/ai/prompt", h.AdminSetAiPrompt)
+				r.Post("/ai/prompt/reset", h.AdminResetAiPrompt)
+				r.Get("/ai/stats", h.AdminAiStats)
+				r.Get("/ai/calls", h.AdminAiCalls)
+				r.Get("/ai/conversations", h.AdminAiConversations)
+				r.Get("/ai/conversations/{user_id}", h.AdminAiThread)
+				// 操作审计（只读）
+				r.Get("/audit", h.AdminAudit)
 			})
-			// 状态看板的读模型
-			r.Get("/overview", h.AdminOverview)
-			r.Get("/trends", h.AdminTrends)
-			r.Get("/orders", h.AdminOrders)
-			r.Get("/orders/{id}", h.AdminOrderDetail)
-			r.Get("/withdrawals", h.AdminWithdrawals)
-			r.Get("/offers", h.AdminOffers)
-			// 用户 / 商户
-			r.Get("/users", h.AdminUsers)
-			r.Get("/users/{id}", h.AdminUserDetail)
-			r.Post("/users/{id}/ban", h.AdminBanUser)
-			r.Post("/users/{id}/revoke-maker", h.AdminRevokeMaker)
-			// 写动作：强制下架挂单（币留锁定）、提现复核标记
-			r.Post("/offers/{id}/delist", h.AdminForceDelist)
-			r.Post("/withdrawals/{id}/review", h.AdminReviewWithdrawal)
-			r.Post("/withdrawals/{id}/verify", h.AdminVerifyWithdrawal)
-			// 身份核验（只读）：列表 + 单次详情。人工放行/驳回待与后端口径对齐后再加。
-			r.Get("/kyc", h.AdminKycList)
-			r.Get("/kyc/{reference}", h.AdminKycDetail)
-			// AI 助手：调用日志 + 对话查看（只读）+ 提示词（人设可改、护栏锁死）
-			r.Get("/ai/prompt", h.AdminAiPrompt)
-			r.Post("/ai/prompt", h.AdminSetAiPrompt)
-			r.Post("/ai/prompt/reset", h.AdminResetAiPrompt)
-			r.Get("/ai/stats", h.AdminAiStats)
-			r.Get("/ai/calls", h.AdminAiCalls)
-			r.Get("/ai/conversations", h.AdminAiConversations)
-			r.Get("/ai/conversations/{user_id}", h.AdminAiThread)
-			// 操作审计（只读）
-			r.Get("/audit", h.AdminAudit)
 		})
 
 		// 额度：不是卡，是签进链上的支配权
@@ -209,8 +223,10 @@ func cors(origins string) func(http.Handler) http.Handler {
 					w.Header().Set("Access-Control-Allow-Origin", o)
 				}
 				w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
+				// Authorization is required for the admin console's Bearer token —
+				// without it the cross-origin preflight rejects every /admin request.
 				w.Header().Set("Access-Control-Allow-Headers",
-					"Content-Type,"+auth.HeaderUser+","+auth.HeaderConfirm)
+					"Content-Type,Authorization,"+auth.HeaderUser+","+auth.HeaderConfirm)
 			}
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)

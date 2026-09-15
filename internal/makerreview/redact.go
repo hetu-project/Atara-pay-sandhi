@@ -52,13 +52,19 @@ var outboundKYC = []string{
 	"highrisk",    //
 }
 
-// outboundListing 是挂单配置里允许出网的字段。
-//
-// 这一张表整体不含身份信息——它说的是「你打算怎么做生意」，不是「你是谁」。
-// 收款渠道（rails）发的是渠道名（ICBC、HSBC），不是账号。
-var outboundListing = []string{
-	"dir", "coins", "lo", "hi", "nets", "pricing", "spread", "fixed", "rails",
-}
+/*
+The listing stage has no whitelist because it never reaches the model.
+
+Every field on that form is structured — sides, assets, two numbers, networks,
+a spread, rail names. There is no free text for a model to read, and the rules
+already decide all of it: an asset outside the catalogue, a lower limit above
+the upper one, a spread outside the band, a rail we cannot settle. Sending it
+anyway would cost a call and three seconds of the applicant's time to be told
+what the rule layer already said, for nothing.
+
+If free text ever appears there, add a whitelist here and lift the stage check
+in AI.Review — not the other way round.
+*/
 
 // Redact 按白名单挑出能出网的字段。
 //
@@ -82,24 +88,19 @@ func Redact(raw json.RawMessage, allow []string) (json.RawMessage, error) {
 	return json.Marshal(out)
 }
 
-// RedactFor 按阶段挑白名单。
-func RedactFor(stage string, raw json.RawMessage) (json.RawMessage, error) {
-	if stage == "listing" {
-		return Redact(raw, outboundListing)
-	}
+// RedactKYC keeps only the identity fields cleared to leave the network.
+func RedactKYC(raw json.RawMessage) (json.RawMessage, error) {
 	return Redact(raw, outboundKYC)
 }
 
-// Outbound 列出某一阶段会发出去的字段名，已排序。
+// Outbound lists, sorted, every field that can leave the network.
 //
-// 给两个地方用：测试（钉死白名单，任何增删都要显式改测试），以及要把这份
-// 清单摆给人看的时候——「模型能看见什么」不该只有读代码的人知道。
-func Outbound(stage string) []string {
-	src := outboundKYC
-	if stage == "listing" {
-		src = outboundListing
-	}
-	out := append([]string(nil), src...)
+// Used in two places: the test that pins the list (so adding or removing a
+// field has to be a deliberate edit), and anywhere the list needs showing to
+// a person — what the model can see should not be knowable only by reading
+// the source.
+func Outbound() []string {
+	out := append([]string(nil), outboundKYC...)
 	sort.Strings(out)
 	return out
 }

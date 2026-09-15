@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -26,20 +27,46 @@ type MakerApp struct {
 	// AutoReviewAt 到点后由 scheduler 放行。演示用——真实环境这里是人。
 	AutoReviewAt *time.Time `json:"-"`
 
+	// AIRetryAt 到点后由 scheduler 把模型层重跑一次。见 schema 里的说明。
+	AIRetryAt  *time.Time `json:"-"`
+	AIAttempts int        `json:"-"`
+
+	// AppealNote 是申请人对预审结论的异议。非空表示这一份在等人看。
+	AppealNote string     `json:"appeal_note,omitempty"`
+	AppealedAt *time.Time `json:"appealed_at,omitempty"`
+
+	// ReviewIssues 是最近一次预审逐项的问题。
+	//
+	// 不是这张表的列——从 maker_reviews 取来挂上的。发给前端是为了把
+	// 「哪几项不对」标在那几项上：reject_reason 那一串摘要只能让人自己
+	// 回到九步表单里翻,而问题本来就是指着字段说的。
+	ReviewIssues json.RawMessage `json:"review_issues,omitempty"`
+
+	// ReviewSource / ReviewedBy say who made the last call: the rule layer,
+	// the model, or a person.
+	//
+	// Not a column either. It goes to the front end because a decision that
+	// blocks someone has to be attributable — without it the verdict reads
+	// like the assistant making conversation, and it is not: it is a record.
+	ReviewSource string `json:"review_source,omitempty"`
+	ReviewModel  string `json:"review_model,omitempty"`
+
 	// 待审列表要显示是谁在申请。
 	DisplayName string `json:"display_name,omitempty"`
 }
 
 const makerCols = `user_id,phase,kyc_done,kyc_ok,listing_done,approved,form_json,
-	reject_reason,submitted_at,reviewed_at,coalesce(reviewer_id,''),updated_at,auto_review_at`
+	reject_reason,submitted_at,reviewed_at,coalesce(reviewer_id,''),updated_at,auto_review_at,
+	ai_retry_at,ai_attempts,appeal_note,appealed_at`
 
 func scanMakerApp(scan func(...any) error, extra ...any) (*MakerApp, error) {
 	var a MakerApp
 	var submitted, reviewed sql.NullString
 	var updated string
-	var auto sql.NullString
+	var auto, retry, appealed sql.NullString
 	dest := []any{&a.UserID, &a.Phase, &a.KYCDone, &a.KYCOk, &a.ListingDone, &a.Approved,
-		&a.FormJSON, &a.RejectReason, &submitted, &reviewed, &a.ReviewerID, &updated, &auto}
+		&a.FormJSON, &a.RejectReason, &submitted, &reviewed, &a.ReviewerID, &updated, &auto,
+		&retry, &a.AIAttempts, &a.AppealNote, &appealed}
 	dest = append(dest, extra...)
 	if err := scan(dest...); err != nil {
 		return nil, err
@@ -55,6 +82,14 @@ func scanMakerApp(scan func(...any) error, extra ...any) (*MakerApp, error) {
 	if auto.Valid {
 		t := parseTS(auto.String)
 		a.AutoReviewAt = &t
+	}
+	if retry.Valid {
+		t := parseTS(retry.String)
+		a.AIRetryAt = &t
+	}
+	if appealed.Valid {
+		t := parseTS(appealed.String)
+		a.AppealedAt = &t
 	}
 	a.UpdatedAt = parseTS(updated)
 	return &a, nil
@@ -140,7 +175,7 @@ func (s *Store) ReviewMakerApp(ctx context.Context, userID, stage, decision, rea
 		args = append(args, reason)
 	}
 	/* 不是人出的票就存 NULL。
-	
+
 	   reviewer_id 有外键指向 users，塞一个 "system:rule" 这样的假 id 进去
 	   会撞约束；而「谁出的这一票」本来也不该记在这儿——maker_reviews.source
 	   分得清规则层、模型和人，那才是它的位置。这一列只回答「哪个人审的」，
@@ -169,15 +204,20 @@ func (s *Store) ReviewMakerApp(ctx context.Context, userID, stage, decision, rea
 	return nil
 }
 
-// PendingMakerApps 列出提交了、当前这一段还没审过的申请。
+// PendingMakerApps 列出待人工审的准入申请。
+//
+// 只列「挂单配置」这一段（listing_done=1 且 approved=0）。身份不在这里审——
+// 身份真伪由 KYC 模块（ID Analyzer）负责，kyc_ok 由那边置位。准入审核只回答
+// 「这个已验明身份的商家能不能按他报的条款挂单卖币」这一个问题。
 func (s *Store) PendingMakerApps(ctx context.Context) ([]MakerApp, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`select a.user_id,a.phase,a.kyc_done,a.kyc_ok,a.listing_done,a.approved,a.form_json,
 		        a.reject_reason,a.submitted_at,a.reviewed_at,coalesce(a.reviewer_id,''),a.updated_at,
-		        a.auto_review_at,u.display_name
+		        a.auto_review_at,a.ai_retry_at,a.ai_attempts,a.appeal_note,a.appealed_at,
+		        u.display_name
 		   from maker_applications a
 		   join users u on u.id = a.user_id
-		  where (a.kyc_done=1 and a.kyc_ok=0) or (a.listing_done=1 and a.approved=0)
+		  where a.listing_done=1 and a.approved=0
 		  order by a.submitted_at asc`)
 	if err != nil {
 		return nil, err
@@ -208,7 +248,8 @@ func (s *Store) ReviewedMakerApps(ctx context.Context, limit int) ([]MakerApp, e
 	rows, err := s.db.QueryContext(ctx,
 		`select a.user_id,a.phase,a.kyc_done,a.kyc_ok,a.listing_done,a.approved,a.form_json,
 		        a.reject_reason,a.submitted_at,a.reviewed_at,coalesce(a.reviewer_id,''),a.updated_at,
-		        a.auto_review_at,u.display_name
+		        a.auto_review_at,a.ai_retry_at,a.ai_attempts,a.appeal_note,a.appealed_at,
+		        u.display_name
 		   from maker_applications a
 		   join users u on u.id = a.user_id
 		  where a.reviewed_at is not null
@@ -294,4 +335,67 @@ func (s *Store) MakerApproved(ctx context.Context, userID string) bool {
 	err := s.db.QueryRowContext(ctx,
 		`select approved from maker_applications where user_id=?`, userID).Scan(&approved)
 	return err == nil && approved
+}
+
+// ── 模型层重试 ──────────────────────────────────────────────────────
+
+// ScheduleAIRetry 把这份申请排进重试队列。
+//
+// 模型读不了不是「你材料有问题」，也不该为此惊动人。记一个时间，由 sweep
+// 回来重跑——起 goroutine 的话进程一重启就没人再管它了，跟 auto_review_at
+// 是同一个道理。
+func (s *Store) ScheduleAIRetry(ctx context.Context, userID string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`update maker_applications
+		    set ai_retry_at=?, ai_attempts=ai_attempts+1, updated_at=?
+		  where user_id=?`, ts(at), ts(Now()), userID)
+	return err
+}
+
+// ClearAIRetry 跑成了就把队列里那一条摘掉，顺带把次数归零——
+// 下一次提交是新的一次，不该背着上一次的失败计数。
+func (s *Store) ClearAIRetry(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`update maker_applications set ai_retry_at=null, ai_attempts=0, updated_at=?
+		  where user_id=?`, ts(Now()), userID)
+	return err
+}
+
+// SetMakerAutoReview 上放行闹钟。重试跑通之后要走跟提交同一条路。
+func (s *Store) SetMakerAutoReview(ctx context.Context, userID string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`update maker_applications set auto_review_at=?, updated_at=? where user_id=?`,
+		ts(at), ts(Now()), userID)
+	return err
+}
+
+// DueAIRetries 是到点该重跑的那些。
+func (s *Store) DueAIRetries(ctx context.Context, now time.Time) ([]MakerApp, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`select `+makerCols+` from maker_applications
+		  where ai_retry_at is not null and ai_retry_at <= ?`, ts(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []MakerApp{}
+	for rows.Next() {
+		a, err := scanMakerApp(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
+// MarkMakerAppealed 记下申请人的异议，把这一份排给人看。
+//
+// 不动 kyc_ok / approved：他仍然是「被打回、等处理」，只是现在多了一个人
+// 在等着看。骗他说「已通过」比不理他更糟。
+func (s *Store) MarkMakerAppealed(ctx context.Context, userID, note string) error {
+	_, err := s.db.ExecContext(ctx,
+		`update maker_applications set appeal_note=?, appealed_at=?, updated_at=?
+		  where user_id=?`, note, ts(Now()), ts(Now()), userID)
+	return err
 }

@@ -72,6 +72,16 @@ func main() {
 		log.Printf("空库启动：没有演示做市方、挂单、联系人或余额。" +
 			"要那套演示数据就设 ATARA_SEED=true。")
 	}
+	// 首个管理员账号。这个登录名不存在时才建——解决鸡生蛋。账号名与密码取
+	// 配置（ATARA_ADMIN_USER / ATARA_ADMIN_PASSWORD，可在 .env 覆盖），
+	// 默认 atara-admin / atara2026。
+	if created, err := st.EnsureSeedAdmin(ctx, cfg.AdminUser, cfg.AdminPassword, "Atara Admin"); err != nil {
+		log.Fatalf("seed admin: %v", err)
+	} else if created {
+		usingDefaultPw := os.Getenv("ATARA_ADMIN_PASSWORD") == ""
+		log.Printf("已建首个管理员：账号 %q（密码来自%s）。", cfg.AdminUser,
+			map[bool]string{true: "演示默认，上线前请用 ATARA_ADMIN_PASSWORD 改掉", false: " ATARA_ADMIN_PASSWORD"}[usingDefaultPw])
+	}
 	svc := app.New(st, ag, ch, cfg, auth.NewConfirmations(st))
 	/* 对话台的模型。没配密钥就留 nil——那时 desk 照常收消息、回一句固定话术，
 	   不影响别的功能，所以这里不是致命错误。 */
@@ -100,7 +110,8 @@ func main() {
 			Timeout: 20 * time.Second,
 		}
 		makerAILabel = cfg.Desk.Model
-		log.Printf("准入预审模型层已开启 · 出网字段 kyc=%v", makerreview.Outbound("kyc"))
+		log.Printf("maker AI review on · identity fields that leave the network: %v",
+			makerreview.Outbound())
 	}
 	go scheduler.New(svc).Run(ctx)
 

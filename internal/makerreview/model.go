@@ -69,7 +69,16 @@ func (a *AI) Review(ctx context.Context, stage string, form json.RawMessage) (Re
 	if a == nil || a.Client == nil {
 		return Result{}, ErrOff
 	}
-	safe, err := RedactFor(stage, form)
+	/* Only identity material goes to the model.
+
+	   The listing stage is entirely structured — the rules decide all of it,
+	   and there is no free text to read. Running the model there would spend
+	   a call and a few seconds of someone's time to repeat what the rule
+	   layer already said. See the note in redact.go. */
+	if stage != "kyc" {
+		return Result{}, ErrOff
+	}
+	safe, err := RedactKYC(form)
 	if err != nil {
 		// 读不出来就别发：发一份我们自己都没解析成功的东西出去，
 		// 等于不知道到底发了什么。

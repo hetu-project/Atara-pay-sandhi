@@ -1,9 +1,12 @@
 package makerreview
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/advaita/atara-pay/internal/desk"
 )
 
 /*
@@ -19,15 +22,9 @@ func TestOutboundWhitelistIsPinned(t *testing.T) {
 		"nationality", "province", "regcountry", "sanction", "sow",
 		"taxcountry", "turnover",
 	}, ",")
-	if got := strings.Join(Outbound("kyc"), ","); got != want {
+	if got := strings.Join(Outbound(), ","); got != want {
 		t.Fatalf("身份材料出网字段变了。\n现在: %s\n钉的: %s\n"+
 			"改这张表要先回答：模型少了它，具体判不了哪一条？", got, want)
-	}
-	want = strings.Join([]string{
-		"coins", "dir", "fixed", "hi", "lo", "nets", "pricing", "rails", "spread",
-	}, ",")
-	if got := strings.Join(Outbound("listing"), ","); got != want {
-		t.Fatalf("挂单配置出网字段变了。\n现在: %s\n钉的: %s", got, want)
 	}
 }
 
@@ -43,7 +40,7 @@ func TestNoIdentifiersEverLeave(t *testing.T) {
 		"repname":"L Cheung","repid":"E12345678","repphone":"+852 9000 0000",
 		"dirname":"M Fong","dirid":"K998877","ubo":"L Cheung","uboid":"E12345678",
 		"csign":"signed","estdate":"2024-03-01"}`)
-	safe, err := RedactFor("kyc", full)
+	safe, err := RedactKYC(full)
 	if err != nil {
 		t.Fatalf("redact: %v", err)
 	}
@@ -68,7 +65,7 @@ func TestNoIdentifiersEverLeave(t *testing.T) {
 // 白名单之外的键要**不存在**，不是置空——置空会让模型看见「这里有东西被
 // 藏起来了」，进而开始猜。
 func TestRedactedKeysAreAbsentNotBlank(t *testing.T) {
-	safe, _ := RedactFor("kyc", json.RawMessage(`{"kind":"Individual","idno":"E1"}`))
+	safe, _ := RedactKYC(json.RawMessage(`{"kind":"Individual","idno":"E1"}`))
 	var m map[string]any
 	_ = json.Unmarshal(safe, &m)
 	if _, ok := m["idno"]; ok {
@@ -168,5 +165,17 @@ func TestFailureEscalatesWithoutBlamingTheForm(t *testing.T) {
 	}
 	if !strings.Contains(r.Issues[0].Ask, "nothing for you to change") {
 		t.Fatalf("不该让用户去改一个没有错的地方: %q", r.Issues[0].Ask)
+	}
+}
+
+// The listing stage must never reach the model: every field on it is
+// structured and the rules already decide all of it. A call there would spend
+// money and a few seconds of the applicant's time to repeat what the rule
+// layer had already told them.
+func TestListingNeverReachesTheModel(t *testing.T) {
+	a := &AI{Client: &desk.Client{}}
+	_, err := a.Review(context.Background(), "listing", json.RawMessage(`{"coins":["USDT"]}`))
+	if err != ErrOff {
+		t.Fatalf("listing should be off, got %v", err)
 	}
 }

@@ -166,16 +166,20 @@ func TestMakerReviewRejectsBadInput(t *testing.T) {
 func TestPendingMakerApps(t *testing.T) {
 	st := openTestStore(t)
 	ctx := context.Background()
-	_ = st.UpsertMakerApp(ctx, MakerApp{UserID: "u1", Phase: "kyc", KYCDone: true})
-	_ = st.UpsertMakerApp(ctx, MakerApp{UserID: "u2", Phase: "kyc"}) // 没提交
+	// 准入审核只列「挂单配置」段（listing 交了没审）。身份归 KYC 模块，
+	// 所以 kyc 段待审的 u3 不该出现在这里。
+	_ = st.UpsertMakerApp(ctx, MakerApp{UserID: "u1", Phase: "listing",
+		KYCDone: true, KYCOk: true, ListingDone: true})
+	_ = st.UpsertMakerApp(ctx, MakerApp{UserID: "u2", Phase: "listing"}) // 没提交
+	_ = st.UpsertMakerApp(ctx, MakerApp{UserID: "u3", Phase: "kyc", KYCDone: true}) // 身份段，不算
 	got, err := st.PendingMakerApps(ctx)
 	if err != nil {
 		t.Fatalf("pending: %v", err)
 	}
 	if len(got) != 1 || got[0].UserID != "u1" {
-		t.Fatalf("待审 = %+v, 期望只有 u1", got)
+		t.Fatalf("待审 = %+v, 期望只有 u1（挂单配置段）", got)
 	}
-	_ = st.ReviewMakerApp(ctx, "u1", "kyc", "approve", "", "u2")
+	_ = st.ReviewMakerApp(ctx, "u1", "listing", "approve", "", "u2")
 	got, _ = st.PendingMakerApps(ctx)
 	if len(got) != 0 {
 		t.Fatalf("审过还留在待审里: %+v", got)
